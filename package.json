@@ -1,0 +1,57 @@
+{
+  "name": "looma-crm",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n api,web \"node --watch --import tsx server/index.ts\" \"vite --host 127.0.0.1\"",
+    "dev:api": "node --watch --import tsx server/index.ts",
+    "dev:web": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build && tsc -p tsconfig.server.json",
+    "start": "node dist/server/index.js",
+    "db:migrate": "node --import tsx server/migrate.ts",
+    "db:seed": "node --import tsx server/seed.ts",
+    "setup": "node scripts/setup.mjs",
+    "test": "node --import tsx --test --test-concurrency=1 tests/*.test.ts",
+    "check": "tsc --noEmit",
+    "backup": "node scripts/backup.mjs",
+    "restore": "node scripts/restore.mjs",
+    "github:publish": "node scripts/github.mjs",
+    "format": "prettier --write server shared web/src tests scripts/*.mjs *.ts *.json *.md docs/*.md"
+  },
+  "dependencies": {
+    "@e965/xlsx": "^0.20.3",
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/helmet": "^13.0.2",
+    "@fastify/multipart": "^9.4.0",
+    "@fastify/rate-limit": "^10.3.0",
+    "@fastify/static": "^10.1.6",
+    "@fontsource/manrope": "^5.3.0",
+    "argon2": "^0.44.0",
+    "docxtemplater": "^3.67.5",
+    "dotenv": "^17.2.3",
+    "fastify": "^5.6.1",
+    "lucide-react": "^0.468.0",
+    "pg": "^8.16.3",
+    "pizzip": "^3.2.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "tar": "^7.5.22",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "@types/pg": "^8.15.5",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@vitejs/plugin-react": "^5.0.4",
+    "concurrently": "^9.2.1",
+    "prettier": "^3.9.10",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.10"
+  }
+}

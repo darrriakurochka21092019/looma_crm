@@ -1,0 +1,13 @@
+node_modules/
+dist/
+dist-web/
+.env
+.env.*
+!.env.example
+storage/
+backups/
+.test-*/
+playwright-report/
+*.log
+*.zip
+.DS_Store

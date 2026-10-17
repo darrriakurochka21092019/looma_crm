@@ -1,0 +1,10 @@
+node_modules
+dist
+dist-web
+.git
+.env
+.env.*
+!.env.example
+storage
+backups
+*.zip

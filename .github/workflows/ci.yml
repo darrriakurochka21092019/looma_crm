@@ -1,0 +1,36 @@
+name: LOOMA checks
+on: [push, pull_request]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: looma
+          POSTGRES_PASSWORD: ci_database_only
+          POSTGRES_DB: looma_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U looma -d looma_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgres://looma:ci_database_only@127.0.0.1:5432/looma_test
+      SEED_PASSWORD: CI-only-password-2026-strong
+      APP_ORIGIN: http://localhost:3001
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: API and restore checks on PostgreSQL 17
+        run: npm test
+        env:
+          TEST_RECOVERY: '1'
+          PG_CONTAINER: ${{ job.services.postgres.id }}
+          PG_DUMP_BIN: ${{ github.workspace }}/scripts/ci-pg-dump.sh
+          PG_RESTORE_BIN: ${{ github.workspace }}/scripts/ci-pg-restore.sh
+      - run: npm audit --omit=dev --audit-level=high

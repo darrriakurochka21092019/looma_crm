@@ -1,0 +1,707 @@
+import { auditActionLabel, entityLabel } from './audit';
+import React, { useState } from 'react';
+import {
+  Check,
+  Copy,
+  Download,
+  FileText,
+  Plus,
+  ShieldCheck,
+  Upload,
+  Users,
+  ChevronRight,
+  ArrowRight,
+  Database,
+  Loader2,
+} from 'lucide-react';
+import { useApp, useLoad, LoadState, Empty } from './main';
+import { FormFooter, useSubmit } from './forms';
+import { api, post, patch, upload, decimal, money, dateLabel } from './api';
+import { roleLabels, type User } from '../../shared/domain';
+export function SettingsPage() {
+  const { data, error } = useLoad<any>('/settings');
+  const [tab, setTab] = useState('company');
+  if (!data) return <LoadState error={error} />;
+  return (
+    <div className="settings-layout">
+      <div className="settings-menu">
+        {[
+          ['company', 'Компания и расчёты'],
+          ['team', 'Сотрудники и роли'],
+          ['template', 'Шаблон договора'],
+          ['import', 'Импорт из Excel'],
+          ['backup', 'Резервное копирование'],
+          ['audit', 'Журнал действий'],
+        ].map(([s, l]) => (
+          <button key={s} className={tab === s ? 'active' : ''} onClick={() => setTab(s)}>
+            {l}
+            <ChevronRight size={16} />
+          </button>
+        ))}
+      </div>
+      <section className="card settings-content">
+        {tab === 'company' && <CompanySettings initial={data} />}{' '}
+        {tab === 'team' && <TeamSettings />}
+        {tab === 'template' && <TemplateSettings settings={data} />}{' '}
+        {tab === 'import' && <ImportPage />}
+        {tab === 'backup' && <BackupInfo />}
+        {tab === 'audit' && <AuditSettings />}
+      </section>
+    </div>
+  );
+}
+function CompanySettings({ initial }: { initial: any }) {
+  const { refresh, notify } = useApp();
+  const [v, setV] = useState({
+    ...initial.data,
+    version: initial.version,
+    rate_text: String(initial.data.tax_rate_bps / 100),
+    balance_text: decimal(initial.data.opening_balance),
+    steps_text: initial.data.step_names.join('\n'),
+  });
+  const { error, busy, submit } = useSubmit();
+  const set = (k: string, s: any) => setV((o: any) => ({ ...o, [k]: s }));
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        submit(async () => {
+          const balanceText = v.balance_text.trim().replace(',', '.');
+          if (!/^-?\d+(\.\d{1,2})?$/.test(balanceText))
+            throw new Error('Некорректный начальный остаток');
+          const updated = await patch('/settings', {
+            ...v,
+            tax_rate_bps: Math.round(Number(v.rate_text.replace(',', '.')) * 100),
+            opening_balance: Math.round(Number(balanceText) * 100),
+            max_file_mb: Number(v.max_file_mb),
+            storage_quota_mb: Number(v.storage_quota_mb),
+            step_names: v.steps_text
+              .split('\n')
+              .map((s: string) => s.trim())
+              .filter(Boolean),
+          });
+          set('version', updated.version);
+          refresh();
+          notify('Настройки сохранены');
+        });
+      }}
+    >
+      <h2>Компания и расчёты</h2>
+      <p className="muted">Правила применяются ко всему рабочему пространству.</p>
+      <div className="form-grid">
+        <label>
+          Название компании
+          <input
+            value={v.company_name}
+            onChange={(e) => set('company_name', e.target.value)}
+            required
+          />
+        </label>
+        <label>
+          Часовой пояс
+          <input value={v.timezone} disabled />
+        </label>
+      </div>
+      <label>
+        Реквизиты компании
+        <textarea
+          value={v.legal_details}
+          onChange={(e) => set('legal_details', e.target.value)}
+          placeholder="Название, ИНН, адрес, банковские реквизиты"
+        />
+      </label>
+      <h3>Налоговый резерв</h3>
+      <div className="form-grid">
+        <label>
+          Режим (справочно)
+          <input value={v.tax_regime} onChange={(e) => set('tax_regime', e.target.value)} />
+        </label>
+        <label>
+          Правило резерва
+          <select value={v.tax_base} onChange={(e) => set('tax_base', e.target.value)}>
+            <option value="receipts">Процент от поступлений минус возвраты</option>
+            <option value="management_profit">
+              Процент от положительной управленческой прибыли
+            </option>
+          </select>
+        </label>
+        <label>
+          Ставка резервирования, %
+          <input
+            inputMode="decimal"
+            value={v.rate_text}
+            onChange={(e) => set('rate_text', e.target.value)}
+            required
+          />
+        </label>
+        <label>
+          Начальный остаток денег, ₽
+          <input value={v.balance_text} onChange={(e) => set('balance_text', e.target.value)} />
+        </label>
+      </div>
+      <p className="muted">
+        Это внутренний резерв. Он не заменяет расчёт налога с учётом НДС, взносов и льгот.
+      </p>
+      <label className="checkbox-label">
+        <input
+          type="checkbox"
+          checked={v.manager_can_close}
+          onChange={(e) => set('manager_can_close', e.target.checked)}
+        />{' '}
+        Разрешить менеджерам закрывать заказы
+      </label>
+      <h3>Производственные этапы</h3>
+      <label>
+        По одному этапу на строку · для новых заказов
+        <textarea
+          rows={7}
+          value={v.steps_text}
+          onChange={(e) => set('steps_text', e.target.value)}
+          required
+        />
+      </label>
+      <h3>Документы</h3>
+      <div className="form-grid">
+        <label>
+          Размер одного файла, МБ (до 25)
+          <input
+            type="number"
+            min={1}
+            max={25}
+            value={v.max_file_mb}
+            onChange={(e) => set('max_file_mb', e.target.value)}
+          />
+        </label>
+        <label>
+          Квота документов, МБ
+          <input
+            type="number"
+            min={50}
+            max={100000}
+            value={v.storage_quota_mb}
+            onChange={(e) => set('storage_quota_mb', e.target.value)}
+          />
+        </label>
+      </div>
+      <FormFooter busy={busy} error={error} />
+    </form>
+  );
+}
+function TeamSettings() {
+  const { users, refresh, notify, user } = useApp();
+  const [invite, setInvite] = useState({ name: '', email: '', role: 'manager' }),
+    [link, setLink] = useState('');
+  const { error, busy, submit } = useSubmit();
+  return (
+    <>
+      <div className="card-heading">
+        <h2>Сотрудники и роли</h2>
+        <Users size={21} />
+      </div>
+      <div className="team-list">
+        {users.map((u) => (
+          <div className="team-row" key={u.id}>
+            <span className="avatar">{u.name[0]}</span>
+            <span>
+              <b>{u.name}</b>
+              <small>{u.email}</small>
+            </span>
+            {u.id === user.id ? (
+              <span className="chip">Владелец · вы</span>
+            ) : (
+              <>
+                <select
+                  aria-label={'Роль ' + u.name}
+                  value={u.role}
+                  onChange={async (e) => {
+                    try {
+                      await patch('/users/' + u.id, { role: e.target.value, active: u.active });
+                      refresh();
+                      notify('Права сотрудника обновлены');
+                    } catch (e: any) {
+                      notify(e.message);
+                    }
+                  }}
+                >
+                  {Object.entries(roleLabels).map(([s, l]) => (
+                    <option value={s} key={s}>
+                      {l}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  className={'btn small ' + (!u.active ? 'success' : '')}
+                  onClick={async () => {
+                    try {
+                      await patch('/users/' + u.id, { role: u.role, active: !u.active });
+                      refresh();
+                      notify('Доступ сотрудника изменён');
+                    } catch (e: any) {
+                      notify(e.message);
+                    }
+                  }}
+                >
+                  {u.active ? 'Отключить' : 'Включить'}
+                </button>
+              </>
+            )}
+          </div>
+        ))}
+      </div>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          submit(async () => {
+            const r = await post('/users/invite', invite);
+            setLink(r.link);
+          });
+        }}
+      >
+        <h3>Пригласить сотрудника</h3>
+        <div className="form-grid">
+          <label>
+            Имя
+            <input
+              required
+              value={invite.name}
+              onChange={(e) => setInvite((o) => ({ ...o, name: e.target.value }))}
+            />
+          </label>
+          <label>
+            Email
+            <input
+              type="email"
+              required
+              value={invite.email}
+              onChange={(e) => setInvite((o) => ({ ...o, email: e.target.value }))}
+            />
+          </label>
+          <label>
+            Роль
+            <select
+              value={invite.role}
+              onChange={(e) => setInvite((o) => ({ ...o, role: e.target.value }))}
+            >
+              <option value="manager">Менеджер</option>
+              <option value="accountant">Бухгалтер</option>
+              <option value="master">Мастер</option>
+            </select>
+          </label>
+        </div>
+        <FormFooter busy={busy} error={error} label="Создать приглашение" />
+      </form>
+      {link && (
+        <div className="invitation-result">
+          <b>Приглашение готово · действует 48 часов</b>
+          <p>
+            Передайте ссылку сотруднику. Для доступа с другого компьютера в настройках сервера
+            должен быть указан адрес, доступный в вашей сети.
+          </p>
+          <input readOnly value={link} onClick={(e) => e.currentTarget.select()} />
+          <button
+            className="btn"
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(link);
+                notify('Ссылка скопирована');
+              } catch {
+                notify('Выделите ссылку и скопируйте её');
+              }
+            }}
+          >
+            <Copy size={15} /> Копировать ссылку
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+function TemplateSettings({ settings }: { settings: any }) {
+  const { notify, refresh } = useApp();
+  const [approved, setApproved] = useState(settings.data.contract_approved);
+  const { error, busy, submit } = useSubmit();
+  return (
+    <>
+      <h2>Шаблон договора</h2>
+      <p className="muted">
+        Загрузите свой DOCX и утвердите его. После загрузки новой версии утверждение сбрасывается.
+      </p>
+      <div className="template-state">
+        <FileText size={32} />
+        <div>
+          <b>{settings.data.contract_template ? 'Шаблон загружен' : 'Шаблон ещё не выбран'}</b>
+          <p>
+            {settings.data.contract_approved
+              ? 'Утверждён · доступен для формирования договоров'
+              : 'Ожидает утверждения владельцем'}
+          </p>
+        </div>
+        {settings.data.contract_template && (
+          <a className="btn" href="/api/settings/contract-template">
+            <Download size={16} /> Скачать
+          </a>
+        )}
+      </div>
+      <label className="drop-zone">
+        <Upload size={25} />
+        <b>Загрузить DOCX</b>
+        <span>Редактируемый шаблон с полями подстановки</span>
+        <input
+          type="file"
+          accept=".docx"
+          disabled={busy}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f)
+              submit(async () => {
+                await upload('/settings/contract-template', f);
+                setApproved(false);
+                refresh();
+                notify('Шаблон загружен. Проверьте его и утвердите.');
+              });
+          }}
+        />
+      </label>
+      <h3>Поля подстановки</h3>
+      <div className="template-tags">
+        {[
+          'company_name',
+          'legal_details',
+          'client_name',
+          'client_phone',
+          'client_address',
+          'client_details',
+          'order_number',
+          'contract_date',
+          'order_title',
+          'items',
+          'total',
+          'due_date',
+          'payment_terms',
+        ].map((s) => (
+          <code key={s}>{'{' + s + '}'}</code>
+        ))}
+      </div>
+      <p className="muted">
+        Образец структуры файла: docs/contract-template.docx в проекте. Замените текст условий на
+        утверждённый вами.
+      </p>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          submit(async () => {
+            const current = await api('/settings');
+            await patch('/settings', {
+              ...current.data,
+              version: current.version,
+              contract_approved: approved,
+            });
+            refresh();
+            notify('Статус шаблона сохранён');
+          });
+        }}
+      >
+        <label className="checkbox-label">
+          <input
+            type="checkbox"
+            checked={approved}
+            onChange={(e) => setApproved(e.target.checked)}
+          />{' '}
+          Шаблон проверен и утверждён для использования
+        </label>
+        <FormFooter busy={busy} error={error} label="Сохранить утверждение" />
+      </form>
+    </>
+  );
+}
+export function ImportPage({ onSaved }: { onSaved?: (s?: string) => void }) {
+  const { notify, refresh } = useApp();
+  const [kind, setKind] = useState('clients'),
+    [job, setJob] = useState<any>(null),
+    [preview, setPreview] = useState<any>(null),
+    [result, setResult] = useState<any>(null);
+  const { error, busy, submit } = useSubmit();
+  return (
+    <>
+      <h2>Импорт из Excel</h2>
+      <p className="muted">
+        Выберите файл, сопоставьте колонки и проверьте строки до записи в базу.
+      </p>
+      <div className="import-steps">
+        <span className={job ? 'done' : 'active'}>1. Файл</span>
+        <i />
+        <span className={preview ? 'done' : job ? 'active' : ''}>2. Сопоставление</span>
+        <i />
+        <span className={result ? 'done' : preview ? 'active' : ''}>3. Проверка</span>
+      </div>
+      {!job ? (
+        <>
+          <label>
+            Что импортируем
+            <select value={kind} onChange={(e) => setKind(e.target.value)}>
+              <option value="clients">Клиенты</option>
+              <option value="orders">Заказы и прямые затраты</option>
+              <option value="expenses">Расходы</option>
+            </select>
+          </label>
+          <label className="drop-zone">
+            <Upload size={28} />
+            <b>{busy ? 'Читаем таблицу…' : 'Выберите Excel .xlsx или .xls'}</b>
+            <span>До 10 МБ и 10 000 строк. Заголовки — в первой строке.</span>
+            <input
+              type="file"
+              accept=".xls,.xlsx"
+              disabled={busy}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) submit(async () => setJob(await upload('/imports/inspect?kind=' + kind, f)));
+              }}
+            />
+          </label>
+        </>
+      ) : !result ? (
+        <>
+          <label>
+            Лист
+            <select
+              value={job.sheet}
+              onChange={async (e) => {
+                const sheet = e.target.value;
+                setPreview(null);
+                submit(async () => {
+                  const r = await api(
+                    '/imports/' + job.id + '/sheet?sheet=' + encodeURIComponent(sheet),
+                  );
+                  setJob({ ...job, ...r });
+                });
+              }}
+            >
+              {job.sheets.map((s: string) => (
+                <option key={s}>{s}</option>
+              ))}
+            </select>
+          </label>
+          {job.already_imported && (
+            <div className="callout warning">
+              Этот файл уже импортировался. Повторное подтверждение будет отклонено.
+            </div>
+          )}
+          <div className="mapping-grid">
+            {Object.entries(job.fields).map(([field, label]) => (
+              <label key={field}>
+                {String(label)}
+                <select
+                  value={job.mapping[field] || ''}
+                  onChange={(e) => {
+                    setJob({ ...job, mapping: { ...job.mapping, [field]: e.target.value } });
+                    setPreview(null);
+                  }}
+                >
+                  <option value="">Не импортировать</option>
+                  {job.headers.map((h: string) => (
+                    <option key={h}>{h}</option>
+                  ))}
+                </select>
+              </label>
+            ))}
+          </div>
+          <button
+            className="btn primary"
+            disabled={busy}
+            onClick={() =>
+              submit(async () =>
+                setPreview(
+                  await post('/imports/preview', {
+                    id: job.id,
+                    sheet: job.sheet,
+                    mapping: job.mapping,
+                  }),
+                ),
+              )
+            }
+          >
+            {busy ? <Loader2 className="spin" size={16} /> : <Check size={16} />} Проверить строки
+          </button>
+          {preview && (
+            <div className="import-preview">
+              <h3>Результат проверки</h3>
+              <div className="import-counts">
+                <span>
+                  <b>{preview.valid}</b> готово
+                </span>
+                <span>
+                  <b>{preview.duplicates}</b> дубли
+                </span>
+                <span>
+                  <b>{preview.errors}</b> ошибки
+                </span>
+              </div>
+              <p className="muted">
+                Будут записаны только корректные строки. Дубли и ошибки пропускаются. Ниже первые{' '}
+                {preview.rows.length} строк.
+              </p>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>СТРОКА</th>
+                      <th>ДАННЫЕ</th>
+                      <th>РЕЗУЛЬТАТ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {preview.rows.map((r: any) => (
+                      <tr key={r.row}>
+                        <td>{r.row}</td>
+                        <td>
+                          <span className="import-row-values">
+                            {Object.entries(r.values)
+                              .filter(([, v]) => v)
+                              .map(([k, v]) => `${job.fields[k]}: ${v}`)
+                              .join(' · ')}
+                          </span>
+                        </td>
+                        <td>
+                          <span
+                            className={
+                              'badge ' + (r.error ? 'cancelled' : r.duplicate ? 'paused' : 'done')
+                            }
+                          >
+                            {r.error || r.duplicate || 'Готово'}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="form-actions">
+                <a className="btn" href={'/api/imports/' + job.id + '/errors'}>
+                  <Download size={16} /> Журнал Excel
+                </a>
+                <button
+                  className="btn dark"
+                  disabled={busy || preview.valid === 0}
+                  onClick={() =>
+                    submit(async () => {
+                      const r = await post('/imports/confirm', { id: job.id });
+                      setResult(r);
+                      refresh();
+                      notify('Импорт завершён');
+                    })
+                  }
+                >
+                  Импортировать {preview.valid} строк <ArrowRight size={16} />
+                </button>
+              </div>
+            </div>
+          )}
+        </>
+      ) : (
+        <div className="import-success">
+          <Check size={35} />
+          <h3>Импорт завершён</h3>
+          <p>
+            Создано: клиентов {result.clients || 0}, заказов {result.orders || 0}, расходов{' '}
+            {result.expenses || 0}. Пропущено строк: {result.skipped || 0}.
+          </p>
+          <a className="btn" href={'/api/imports/' + job.id + '/errors'}>
+            Скачать журнал
+          </a>
+          <button
+            className="btn primary"
+            onClick={() => {
+              setJob(null);
+              setPreview(null);
+              setResult(null);
+            }}
+          >
+            Новый импорт
+          </button>
+        </div>
+      )}
+      {error && (
+        <div className="form-error" role="alert">
+          {error}
+        </div>
+      )}
+      {kind === 'orders' && (
+        <div className="inline-note">
+          Стоимость — цена за единицу изделия. Ткань, работа мастера и доставка, если сопоставлены
+          как затраты, создаются как расходы без оплаты. Клиентские платежи при импорте не
+          создаются.
+        </div>
+      )}
+    </>
+  );
+}
+function BackupInfo() {
+  return (
+    <>
+      <h2>Резервное копирование</h2>
+      <p className="muted">
+        Резервная копия включает PostgreSQL, все документы и шаблон договора. Доступ к созданию и
+        восстановлению есть у администратора компьютера.
+      </p>
+      <div className="backup-card">
+        <Database size={30} />
+        <h3>Создать копию</h3>
+        <p>В папке проекта откройте терминал и выполните:</p>
+        <code>npm run backup</code>
+        <p>
+          В Docker Compose отдельная служба создаёт ежедневные копии в папке backups. Скопируйте
+          архив на другой диск или устройство.
+        </p>
+      </div>
+      <div className="backup-card">
+        <ShieldCheck size={30} />
+        <h3>Восстановить копию</h3>
+        <p>
+          Выполняйте при остановленном приложении. Команда из README восстановит базу и документы в
+          новый каталог. Перед заменой рабочей базы создайте свежую копию.
+        </p>
+        <code>npm run restore -- путь_к_копии</code>
+      </div>
+      <p className="muted">
+        Рекомендуемая проверка — восстановление в отдельную тестовую базу хотя бы раз в месяц.
+      </p>
+    </>
+  );
+}
+function AuditSettings() {
+  const { data, error } = useLoad<any[]>('/audit');
+  return (
+    <>
+      <h2>Журнал действий</h2>
+      <p className="muted">
+        Последние 200 событий. Существующие записи нельзя изменить через приложение.
+      </p>
+      {data ? (
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ВРЕМЯ</th>
+                <th>СОТРУДНИК</th>
+                <th>ДЕЙСТВИЕ</th>
+                <th>ОБЪЕКТ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.map((a) => (
+                <tr key={a.id}>
+                  <td>{new Date(a.created_at).toLocaleString('ru-RU')}</td>
+                  <td>{a.author_name || 'Система'}</td>
+                  <td>{auditActionLabel(a.action)}</td>
+                  <td>{entityLabel(a.entity)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <LoadState error={error} />
+      )}
+    </>
+  );
+}

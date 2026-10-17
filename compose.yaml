@@ -1,0 +1,52 @@
+name: looma
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-looma}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run npm run setup first}
+      POSTGRES_DB: ${POSTGRES_DB:-looma}
+      TZ: Europe/Moscow
+    ports: ["127.0.0.1:5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+  app:
+    build: .
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-looma}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-looma}
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3001}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      HOST: 0.0.0.0
+      NODE_ENV: production
+      COMPANY_TIMEZONE: Europe/Moscow
+      STORAGE_DIR: /app/storage
+      SEED_PASSWORD: ${SEED_PASSWORD:?Run npm run setup first}
+    ports: ["127.0.0.1:3001:3001"]
+    volumes: ["./storage:/app/storage"]
+    depends_on:
+      db: {condition: service_healthy}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+  backup:
+    image: postgres:17-alpine
+    environment:
+      PGHOST: db
+      PGUSER: ${POSTGRES_USER:-looma}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB:-looma}
+    volumes: ["./storage:/data/storage:ro", "./backups:/backups", "./scripts/docker-backup.sh:/backup.sh:ro"]
+    depends_on:
+      db: {condition: service_healthy}
+    entrypoint: ["/bin/sh", "-c", "while true; do /bin/sh /backup.sh; sleep 86400; done"]
+    restart: unless-stopped
+volumes:
+  pgdata:

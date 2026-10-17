@@ -1,0 +1,7 @@
+# Future server deployment: docker compose -f compose.yaml -f docs/compose.domain.example.yaml up -d
+# Update .env: APP_ORIGIN=https://crm.example.ru and COOKIE_SECURE=true
+services:
+  app:
+    environment:
+      COOKIE_SECURE: "true"
+      TRUST_PROXY: "true"

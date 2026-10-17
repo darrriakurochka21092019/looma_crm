@@ -1,0 +1,9 @@
+# Replace crm.example.ru with your purchased domain.
+crm.example.ru {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:3001
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy same-origin
+    }
+}
