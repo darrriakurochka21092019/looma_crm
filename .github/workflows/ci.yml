@@ -10,7 +10,7 @@ jobs:
           POSTGRES_USER: looma
           POSTGRES_PASSWORD: ci_database_only
           POSTGRES_DB: looma_test
-        ports: ["5432:5432"]
+        ports: ['5432:5432']
         options: >-
           --health-cmd "pg_isready -U looma -d looma_test"
           --health-interval 5s --health-timeout 5s --health-retries 20
@@ -34,3 +34,30 @@ jobs:
           PG_DUMP_BIN: ${{ github.workspace }}/scripts/ci-pg-dump.sh
           PG_RESTORE_BIN: ${{ github.workspace }}/scripts/ci-pg-restore.sh
       - run: npm audit --omit=dev --audit-level=high
+  docker:
+    name: Docker Compose launch
+    runs-on: ubuntu-latest
+    needs: verify
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Prepare local configuration
+        run: |
+          node scripts/setup.mjs
+          mkdir -p storage backups
+          sudo chown -R 1000:1000 storage
+      - name: Build and launch application
+        run: docker compose up -d --build --wait --wait-timeout 120
+      - name: Create owner and verify production application
+        run: |
+          docker compose exec -T app node dist/server/seed.js
+          node --env-file=.env scripts/ci-smoke.mjs
+      - name: Container logs
+        if: failure()
+        run: docker compose logs --no-color
+      - name: Remove temporary CI containers and database
+        if: always()
+        run: docker compose down -v
