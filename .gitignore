@@ -11,3 +11,4 @@ playwright-report/
 *.log
 *.zip
 .DS_Store
+artifacts/

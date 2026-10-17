@@ -15,6 +15,7 @@
     "db:migrate": "node --import tsx server/migrate.ts",
     "db:seed": "node --import tsx server/seed.ts",
     "setup": "node scripts/setup.mjs",
+    "package:ready": "npm run build && node scripts/package-ready.mjs",
     "test": "node --import tsx --test --test-concurrency=1 tests/*.test.ts",
     "check": "tsc --noEmit",
     "backup": "node scripts/backup.mjs",
