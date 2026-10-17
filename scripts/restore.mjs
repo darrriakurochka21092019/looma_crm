@@ -108,7 +108,13 @@ try {
       .catch(rej);
   });
   await mkdir(dest, { recursive: true });
-  await cp(join(base, 'storage'), dest, { recursive: true, force: false, errorOnExist: true });
+  const recoveredStorage = join(base, 'storage');
+  for (const entry of await readdir(recoveredStorage))
+    await cp(join(recoveredStorage, entry), join(dest, entry), {
+      recursive: true,
+      force: false,
+      errorOnExist: true,
+    });
   console.log(
     'Восстановление завершено в отдельную базу и каталог: ' +
       dest +
