@@ -739,11 +739,16 @@ test('Приостановка и отмена исключают заказ, в
     },
     'manager',
   );
-  await call('POST', '/tax-reservations', { period: '2030-04' }, 'manager');
+  await call(
+    'POST',
+    '/tax-reservations',
+    { period: '2030-04', adjustment: -10000, reason: 'Корректировка резерва' },
+    'manager',
+  );
   const before = await call('GET', '/finance?period=2030-04');
   assert.equal(before.summary.receipts, 350000);
   assert.equal(before.summary.payouts, 50000);
-  assert.equal(before.summary.tax_reserve, 21000);
+  assert.equal(before.summary.tax_reserve, 11000);
   let current = await call('GET', '/orders/' + o.id);
   await call(
     'PATCH',
@@ -766,7 +771,7 @@ test('Приостановка и отмена исключают заказ, в
     assert.equal(after.summary.tax_reserve, 0);
     assert.equal(after.summary.debt, before.summary.debt - 650000);
     assert.equal(after.summary.balance, before.summary.balance - 300000);
-    assert.equal(after.summary.reserved_total, before.summary.reserved_total - 21000);
+    assert.equal(after.summary.reserved_total, before.summary.reserved_total - 11000);
     assert.ok(!after.debts.some((x: any) => x.id === o.id));
     assert.ok(!after.expenses.some((x: any) => x.id === e.id));
     assert.ok(!after.movements.some((x: any) => x.order_number === o.number));
@@ -798,7 +803,7 @@ test('Приостановка и отмена исключают заказ, в
   await call('PATCH', '/orders/' + o.id, { version: current.version, status: 'new' }, 'manager');
   const restored = await call('GET', '/finance?period=2030-04');
   assert.equal(restored.summary.receipts, 350000);
-  assert.equal(restored.summary.tax_reserve, 21000);
+  assert.equal(restored.summary.tax_reserve, 11000);
   assert.equal(restored.summary.debt, before.summary.debt);
 });
 function batchForm(entries: { name: string; data: Buffer }[], role = 'manager') {
@@ -1021,6 +1026,38 @@ test('MAX: секрет не возвращается, очередь переж
       )
     ).rows[0].n,
     0,
+  );
+  const archivedOrder = await call('GET', '/orders/' + order.id);
+  await call('PATCH', '/orders/' + order.id, { version: archivedOrder.version, status: 'new' });
+  const resumed = (await call('GET', '/tasks?scope=team&order_id=' + order.id)).find(
+    (task: any) => task.id === linked.id,
+  );
+  assert.ok(resumed.version > linked.version);
+  await max.scheduleTaskReminders(pool, 60);
+  assert.equal(
+    (
+      await pool.query(
+        "SELECT count(*)::int n FROM task_notifications WHERE task_id=$1 AND task_version=$2 AND kind='due'",
+        [linked.id, resumed.version],
+      )
+    ).rows[0].n,
+    1,
+  );
+  const overdue = await call('POST', '/tasks', {
+    title: 'Просроченная отдельная задача',
+    assignee_id: users.manager.id,
+    due_at: new Date(Date.now() - 60000).toISOString(),
+  });
+  await max.scheduleTaskReminders(pool, 60);
+  await max.scheduleTaskReminders(pool, 60);
+  assert.equal(
+    (
+      await pool.query(
+        "SELECT count(*)::int n FROM task_notifications WHERE task_id=$1 AND kind='overdue'",
+        [overdue.id],
+      )
+    ).rows[0].n,
+    1,
   );
   const data = await call('GET', '/settings/max');
   assert.ok(!JSON.stringify(data).includes('test-max-token-never-real'));

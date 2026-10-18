@@ -2162,7 +2162,7 @@ export function Finance({ period, order }: { period: string; order?: Order }) {
                       <tr key={t.id}>
                         <td>{t.period}</td>
                         <td>{money(t.base_amount)}</td>
-                        <td>{money(t.calculated_amount + t.adjustment)}</td>
+                        <td>{money(Math.max(0, t.calculated_amount + t.adjustment))}</td>
                         <td>
                           {money(t.adjustment)}
                           <small className="cell-sub">{t.reason}</small>
