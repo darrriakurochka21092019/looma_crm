@@ -1,8 +1,8 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { access, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const marker = resolve(root, 'node_modules/.looma-runtime-lock');
@@ -11,9 +11,9 @@ if (major < 22 || (major === 22 && minor < 12)) {
   console.error('Для запуска нужен Node.js 22.12 или новее. Рекомендуется Node.js 24.');
   process.exit(1);
 }
-function run(command, args, title, shell = false) {
+function run(command, args, title) {
   return new Promise((resolveRun, reject) => {
-    const child = spawn(command, args, { cwd: root, stdio: 'inherit', shell });
+    const child = spawn(command, args, { cwd: root, stdio: 'inherit', shell: false });
     const stop = (signal) => child.kill(signal);
     const stopTerm = () => stop('SIGTERM');
     const stopInt = () => stop('SIGINT');
@@ -44,11 +44,20 @@ try {
   const installed = await readFile(marker, 'utf8').catch(() => '');
   if (installed !== fingerprint) {
     console.log('Устанавливаются только зависимости готового приложения, без Vite, tsx и esbuild.');
+    const npmArgs = ['ci', '--omit=dev', '--ignore-scripts', '--no-fund'];
+    if (process.platform === 'win32') {
+      const npmCli = resolve(dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js');
+      await access(npmCli);
+      await run(process.execPath, [npmCli, ...npmArgs], 'Установка зависимостей');
+    } else await run('npm', npmArgs, 'Установка зависимостей');
     await run(
-      'npm',
-      ['ci', '--omit=dev', '--no-fund'],
-      'Установка зависимостей',
-      process.platform === 'win32',
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        "import argon2 from 'argon2'; const h=await argon2.hash('LOOMA install check'); if(!await argon2.verify(h,'LOOMA install check')) process.exit(1);",
+      ],
+      'Проверка готового модуля паролей',
     );
     await writeFile(marker, fingerprint);
   }
