@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { AppError, audit, pool, transaction } from '../db.js';
+import { enqueueTaskNotification } from '../max.js';
 import { accessibleOrder, uuid } from '../security.js';
 const schema = z.object({
   title: z.string().trim().min(1).max(250),
@@ -16,18 +17,19 @@ export async function taskRoutes(app: FastifyInstance) {
       .object({
         scope: z.enum(['mine', 'team', 'overdue']).default('mine'),
         order_id: uuid.optional(),
+        kind: z.enum(['all', 'order', 'standalone']).default('all'),
       })
       .parse(req.query);
     const params: any[] = [];
     let where = 'true';
-    if (req.user.role === 'owner' && q.scope !== 'mine') {
-    } else if (req.user.role === 'manager' && q.scope !== 'mine') {
-      params.push(req.user.id);
-      where = '(t.assignee_id=$1 OR t.author_id=$1)';
-    } else {
+    if (!(['owner', 'manager'].includes(req.user.role) && q.scope !== 'mine')) {
       params.push(req.user.id);
       where = 't.assignee_id=$1';
     }
+    if (!q.order_id)
+      where += " AND (o.id IS NULL OR (NOT o.archived AND o.status NOT IN ('paused','cancelled')))";
+    if (q.kind === 'order') where += ' AND t.order_id IS NOT NULL';
+    if (q.kind === 'standalone') where += ' AND t.order_id IS NULL';
     if (q.scope === 'overdue') where += " AND t.due_at<now() AND t.status<>'done'";
     if (q.order_id) {
       await accessibleOrder(req.user, q.order_id);
@@ -48,11 +50,7 @@ export async function taskRoutes(app: FastifyInstance) {
         rows: [a],
       } = await db.query('SELECT role FROM users WHERE id=$1 AND active', [b.assignee_id]);
       if (!a) throw new AppError(400, 'Исполнитель не найден');
-      if (
-        req.user.role !== 'owner' &&
-        b.assignee_id !== req.user.id &&
-        !(req.user.role === 'manager' && a.role === 'master')
-      )
+      if (!['owner', 'manager'].includes(req.user.role) && b.assignee_id !== req.user.id)
         throw new AppError(403, 'Нет права назначать задачу этому сотруднику');
       if (b.order_id) {
         await accessibleOrder(req.user, b.order_id, db);
@@ -86,6 +84,7 @@ export async function taskRoutes(app: FastifyInstance) {
         null,
         t,
       );
+      await enqueueTaskNotification(db, t, 'assigned');
       return t;
     });
   });
@@ -108,11 +107,7 @@ export async function taskRoutes(app: FastifyInstance) {
         rows: [t],
       } = await db.query('SELECT * FROM tasks WHERE id=$1 FOR UPDATE', [id]);
       if (!t) throw new AppError(404, 'Задача не найдена');
-      if (
-        req.user.role !== 'owner' &&
-        t.assignee_id !== req.user.id &&
-        !(req.user.role === 'manager' && t.author_id === req.user.id)
-      )
+      if (!['owner', 'manager'].includes(req.user.role) && t.assignee_id !== req.user.id)
         throw new AppError(403, 'Нет доступа');
       if (t.version !== b.version) throw new AppError(409, 'Задача уже изменена. Обновите список');
       if (
@@ -127,8 +122,6 @@ export async function taskRoutes(app: FastifyInstance) {
           rows: [a],
         } = await db.query('SELECT role FROM users WHERE id=$1 AND active', [assignee]);
         if (!a) throw new AppError(400, 'Исполнитель не найден');
-        if (req.user.role === 'manager' && assignee !== req.user.id && a.role !== 'master')
-          throw new AppError(403, 'Нет права назначать задачу этому сотруднику');
       }
       if (orderId) {
         await accessibleOrder(req.user, orderId, db);
@@ -170,6 +163,15 @@ export async function taskRoutes(app: FastifyInstance) {
         t,
         n,
       );
+      await enqueueTaskNotification(
+        db,
+        n,
+        n.status === 'done'
+          ? 'completed'
+          : n.assignee_id !== t.assignee_id
+            ? 'assigned'
+            : 'updated',
+      );
       return n;
     });
   });
@@ -178,11 +180,7 @@ export async function taskRoutes(app: FastifyInstance) {
       rows: [t],
     } = await pool.query('SELECT * FROM tasks WHERE id=$1', [id]);
     if (!t) throw new AppError(404, 'Задача не найдена');
-    if (
-      req.user.role !== 'owner' &&
-      t.assignee_id !== req.user.id &&
-      !(req.user.role === 'manager' && t.author_id === req.user.id)
-    )
+    if (!['owner', 'manager'].includes(req.user.role) && t.assignee_id !== req.user.id)
       throw new AppError(403, 'Нет доступа');
     return t;
   }

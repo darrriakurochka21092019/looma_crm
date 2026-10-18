@@ -16,9 +16,8 @@ const meta = z.object({
 });
 function allowed(role: string, visibility: string) {
   return (
-    role === 'owner' ||
+    ['owner', 'manager'].includes(role) ||
     (role === 'accountant' && visibility === 'financial') ||
-    (role === 'manager' && visibility !== 'financial') ||
     (role === 'master' && visibility === 'technical')
   );
 }
@@ -38,12 +37,12 @@ export async function documentRoutes(app: FastifyInstance) {
       p.push(q.order_id);
       where += ` AND d.order_id=$${p.length}`;
     }
+    if (!q.order_id) where += " AND NOT o.archived AND o.status NOT IN ('paused','cancelled')";
     if (q.category) {
       p.push(q.category);
       where += ` AND d.category=$${p.length}`;
     }
     if (req.user.role === 'accountant') where += " AND d.visibility='financial'";
-    if (req.user.role === 'manager') where += " AND d.visibility IN ('commercial','technical')";
     if (req.user.role === 'master') {
       p.push(req.user.id);
       where += ` AND d.visibility='technical' AND (o.master_id=$${p.length} OR EXISTS(SELECT 1 FROM production_steps ps WHERE ps.order_id=o.id AND ps.assignee_id=$${p.length}))`;
@@ -54,7 +53,7 @@ export async function documentRoutes(app: FastifyInstance) {
         p,
       )
     ).rows;
-    if (req.user.role === 'owner') {
+    if (['owner', 'manager'].includes(req.user.role)) {
       for (const d of rows)
         d.versions = (
           await pool.query(
@@ -70,53 +69,64 @@ export async function documentRoutes(app: FastifyInstance) {
     await accessibleOrder(req.user, b.order_id);
     if (!allowed(req.user.role, b.visibility))
       throw new AppError(403, 'Нет доступа к этой категории документов');
-    const part = await req.file();
-    if (!part) throw new AppError(400, 'Выберите файл');
-    const data = await part.toBuffer();
-    const name = part.filename.replace(/[\x00-\x1f/\\]/g, '_').slice(0, 200);
-    const mime = validateFile(name, data);
-    let storedKey = '';
+    const files: { name: string; data: Buffer; mime: string }[] = [];
+    let total = 0;
+    for await (const part of req.files({
+      limits: { files: b.document_id ? 1 : 10, parts: 10, fileSize: 25 * 1024 * 1024 },
+    })) {
+      const data = await part.toBuffer();
+      total += data.length;
+      if (total > 100 * 1024 * 1024) throw new AppError(400, 'Общий размер файлов — до 100 МБ');
+      const name = part.filename.replace(/[\x00-\x1f/\\]/g, '_').slice(0, 200);
+      files.push({ name, data, mime: validateFile(name, data) });
+    }
+    if (!files.length) throw new AppError(400, 'Выберите файлы');
+    const storedKeys: string[] = [];
     try {
       return await transaction(async (db) => {
-        let id = b.document_id;
-        let version = 1;
-        if (id) {
-          const {
-            rows: [d],
-          } = await db.query('SELECT * FROM documents WHERE id=$1 FOR UPDATE', [id]);
-          if (!d || d.order_id !== b.order_id) throw new AppError(404, 'Документ не найден');
-          if (!allowed(req.user.role, d.visibility)) throw new AppError(403, 'Нет доступа');
-          if (b.version !== d.current_version)
-            throw new AppError(409, 'Документ уже обновлён другим сотрудником');
-          if (d.visibility !== b.visibility || d.category !== b.category)
-            throw new AppError(400, 'Категория и видимость новой версии должны совпадать');
-          version = d.current_version + 1;
-          await db.query('UPDATE documents SET current_version=$2 WHERE id=$1', [id, version]);
-        } else {
-          const {
-            rows: [d],
-          } = await db.query(
-            'INSERT INTO documents(order_id,category,visibility,comment) VALUES($1,$2,$3,$4) RETURNING id',
-            [b.order_id, b.category, b.visibility, b.comment],
+        const documents = [];
+        for (const { name, data, mime } of files) {
+          let id = b.document_id;
+          let version = 1;
+          if (id) {
+            const {
+              rows: [d],
+            } = await db.query('SELECT * FROM documents WHERE id=$1 FOR UPDATE', [id]);
+            if (!d || d.order_id !== b.order_id) throw new AppError(404, 'Документ не найден');
+            if (!allowed(req.user.role, d.visibility)) throw new AppError(403, 'Нет доступа');
+            if (b.version !== d.current_version)
+              throw new AppError(409, 'Документ уже обновлён другим сотрудником');
+            if (d.visibility !== b.visibility || d.category !== b.category)
+              throw new AppError(400, 'Категория и видимость новой версии должны совпадать');
+            version = d.current_version + 1;
+            await db.query('UPDATE documents SET current_version=$2 WHERE id=$1', [id, version]);
+          } else {
+            const {
+              rows: [d],
+            } = await db.query(
+              'INSERT INTO documents(order_id,category,visibility,comment) VALUES($1,$2,$3,$4) RETURNING id',
+              [b.order_id, b.category, b.visibility, b.comment],
+            );
+            id = d.id;
+          }
+          const f = await storeFile(db, name, data, mime);
+          storedKeys.push(f.key);
+          await db.query(
+            'INSERT INTO document_versions(document_id,version,name,storage_key,mime,size,sha256,author_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
+            [id, version, name, f.key, mime, f.size, f.sha256, req.user.id],
           );
-          id = d.id;
+          await audit(db, req.user.id, 'order', b.order_id, 'document_uploaded', null, {
+            id,
+            name,
+            version,
+            visibility: b.visibility,
+          });
+          documents.push({ id, name, version });
         }
-        const f = await storeFile(db, name, data, mime);
-        storedKey = f.key;
-        await db.query(
-          'INSERT INTO document_versions(document_id,version,name,storage_key,mime,size,sha256,author_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
-          [id, version, name, f.key, mime, f.size, f.sha256, req.user.id],
-        );
-        await audit(db, req.user.id, 'order', b.order_id, 'document_uploaded', null, {
-          id,
-          name,
-          version,
-          visibility: b.visibility,
-        });
-        return { id, name, version };
+        return files.length === 1 ? documents[0] : { documents };
       });
     } catch (e) {
-      if (storedKey) await removeOrphan(storedKey);
+      for (const key of storedKeys) await removeOrphan(key);
       throw e;
     }
   });
@@ -135,7 +145,7 @@ export async function documentRoutes(app: FastifyInstance) {
     await accessibleOrder(req.user, d.order_id);
     if (!allowed(req.user.role, d.visibility)) throw new AppError(403, 'Нет доступа к файлу');
     const version = q.version ?? d.current_version;
-    if (version !== d.current_version) requireRole(req, 'owner');
+    if (version !== d.current_version) requireRole(req, 'owner', 'manager');
     const {
       rows: [v],
     } = await pool.query('SELECT * FROM document_versions WHERE document_id=$1 AND version=$2', [

@@ -71,7 +71,14 @@ export async function storeFile(db: DB, name: string, data: Buffer, mime?: strin
 }
 export async function removeOrphan(key: string) {
   if (!/^[\w.-]+$/.test(key)) return;
-  await unlink(resolve(storage, key)).catch(() => {});
+  // A lost COMMIT acknowledgement does not prove rollback. Keep files if the
+  // database cannot confirm that no committed registry entry references them.
+  try {
+    if ((await pool.query('SELECT 1 FROM file_blobs WHERE storage_key=$1', [key])).rowCount) return;
+    await unlink(resolve(storage, key)).catch(() => {});
+  } catch {
+    /* Leave a harmless orphan for later maintenance rather than lose a document. */
+  }
 }
 export async function fileBytes(key: string) {
   if (!/^[\w.-]+$/.test(key)) throw new AppError(400, 'Некорректный файл');

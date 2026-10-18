@@ -100,11 +100,19 @@ function OrderSelect({
   optional?: boolean;
 }) {
   const { data } = useLoad<any>('/orders?limit=200&sort=newest');
+  const { data: selected } = useLoad<Order>(
+    value && !data?.items.some((o: Order) => o.id === value) ? '/orders/' + value : null,
+  );
   return (
     <label>
       Заказ
       <select value={value} onChange={(e) => onChange(e.target.value)} required={!optional}>
-        <option value="">{optional ? 'Общий расход / без заказа' : 'Выберите заказ'}</option>
+        <option value="">{optional ? 'Без заказа' : 'Выберите заказ'}</option>
+        {selected && !data?.items.some((o: Order) => o.id === selected.id) && (
+          <option value={selected.id}>
+            {selected.number} · {selected.title}
+          </option>
+        )}
         {data?.items.map((o: Order) => (
           <option key={o.id} value={o.id}>
             {o.number} · {o.client_name} · {o.title}
@@ -315,7 +323,7 @@ export function OrderForm({ data, onSaved }: Props) {
       </div>
       <div className="form-section-heading">
         <h3>Изделия в заказе</h3>
-        {(!data.id || user.role === 'owner') && (
+        {(!data.id || ['owner', 'manager'].includes(user.role)) && (
           <button
             className="btn small"
             type="button"
@@ -329,7 +337,7 @@ export function OrderForm({ data, onSaved }: Props) {
         <div className="item-form" key={idx}>
           <div className="item-form-heading">
             <b>Изделие {idx + 1}</b>
-            {items.length > 1 && (!data.id || user.role === 'owner') && (
+            {items.length > 1 && (!data.id || ['owner', 'manager'].includes(user.role)) && (
               <button
                 type="button"
                 className="icon-btn"
@@ -636,6 +644,7 @@ export function ExpenseForm({ data, onSaved }: Props) {
 }
 export function TaskForm({ data, onSaved }: Props) {
   const { users, user } = useApp();
+  const [kind, setKind] = useState(data.order_id ? 'order' : 'standalone');
   const [v, setV] = useState({
     title: data.title || '',
     description: data.description || '',
@@ -657,9 +666,10 @@ export function TaskForm({ data, onSaved }: Props) {
       onSubmit={(e) => {
         e.preventDefault();
         submit(async () => {
+          if (kind === 'order' && !v.order_id) throw new Error('Выберите заказ');
           const payload = {
             ...v,
-            order_id: v.order_id || null,
+            order_id: kind === 'order' ? v.order_id || null : null,
             due_at: new Date(v.due_at).toISOString(),
           };
           if (data.id) await patch('/tasks/' + data.id, { ...payload, version: data.version });
@@ -673,18 +683,30 @@ export function TaskForm({ data, onSaved }: Props) {
         Описание
         <textarea value={v.description} onChange={(e) => set('description', e.target.value)} />
       </label>
-      <OrderSelect value={v.order_id} onChange={(s) => set('order_id', s)} optional />
+      <div className="segmented task-kind" aria-label="Тип задачи">
+        <button
+          type="button"
+          className={kind === 'standalone' ? 'active' : ''}
+          onClick={() => setKind('standalone')}
+        >
+          Отдельная задача
+        </button>
+        <button
+          type="button"
+          className={kind === 'order' ? 'active' : ''}
+          onClick={() => setKind('order')}
+        >
+          По заказу
+        </button>
+      </div>
+      {kind === 'order' && <OrderSelect value={v.order_id} onChange={(s) => set('order_id', s)} />}
       <div className="form-grid">
         <label>
           Исполнитель
           <select value={v.assignee_id} onChange={(e) => set('assignee_id', e.target.value)}>
             {users
               .filter(
-                (u) =>
-                  u.active &&
-                  (user.role === 'owner' ||
-                    u.id === user.id ||
-                    (user.role === 'manager' && u.role === 'master')),
+                (u) => u.active && (['owner', 'manager'].includes(user.role) || u.id === user.id),
               )
               .map((u) => (
                 <option key={u.id} value={u.id}>
@@ -731,22 +753,53 @@ export function DocumentForm({ data, onSaved }: Props) {
           : 'commercial'),
     comment: '',
   });
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const [selectionError, setSelectionError] = useState('');
+  const addFiles = (incoming: File[]) => {
+    const unique = [...files, ...incoming].filter(
+      (f, i, all) =>
+        all.findIndex(
+          (other) =>
+            other.name === f.name && other.size === f.size && other.lastModified === f.lastModified,
+        ) === i,
+    );
+    const next = data.document_id ? incoming : unique;
+    if (next.length > (data.document_id ? 1 : 10)) {
+      setSelectionError(
+        data.document_id
+          ? 'Для новой версии выберите один файл'
+          : 'За один раз можно загрузить до 10 файлов',
+      );
+      return;
+    }
+    if (
+      next.some((f) => f.size > 25 * 1024 * 1024) ||
+      next.reduce((n, f) => n + f.size, 0) > 100 * 1024 * 1024
+    ) {
+      setSelectionError('До 25 МБ на файл и до 100 МБ на всю загрузку');
+      return;
+    }
+    setSelectionError('');
+    setFiles(next);
+  };
   const { error, busy, submit } = useSubmit();
   return (
     <form
       onSubmit={(e) => {
         e.preventDefault();
         submit(async () => {
-          if (!file) throw new Error('Выберите файл');
+          if (!files.length) throw new Error('Выберите файлы');
+          if (selectionError) throw new Error(selectionError);
           const q = new URLSearchParams({
             ...v,
             ...(data.document_id
               ? { document_id: data.document_id, version: String(data.version) }
               : {}),
           });
-          await upload('/documents?' + q, file);
-          onSaved(data.document_id ? 'Новая версия сохранена' : 'Документ прикреплён');
+          await upload('/documents?' + q, files);
+          onSaved(
+            data.document_id ? 'Новая версия сохранена' : `Прикреплено файлов: ${files.length}`,
+          );
         });
       }}
     >
@@ -780,8 +833,7 @@ export function DocumentForm({ data, onSaved }: Props) {
             ]
               .filter(
                 ([k]) =>
-                  user.role === 'owner' ||
-                  (user.role === 'manager' && k !== 'financial') ||
+                  ['owner', 'manager'].includes(user.role) ||
                   (user.role === 'master' && k === 'technical') ||
                   (user.role === 'accountant' && k === 'financial'),
               )
@@ -798,18 +850,55 @@ export function DocumentForm({ data, onSaved }: Props) {
         onDragOver={(e) => e.preventDefault()}
         onDrop={(e) => {
           e.preventDefault();
-          setFile(e.dataTransfer.files[0] || null);
+          addFiles(Array.from(e.dataTransfer.files));
         }}
       >
         <Upload size={28} />
-        <b>{file ? file.name : 'Выберите файл или перетащите сюда'}</b>
-        <span>PDF, JPG, PNG, DOCX, XLSX, XLS · до 25 МБ</span>
+        <b>
+          {data.document_id ? 'Выберите новую версию файла' : 'Выберите файлы или перетащите сюда'}
+        </b>
+        <span>PDF, JPG, PNG, DOCX, XLSX, XLS · до 25 МБ на файл</span>
+        {!data.document_id && <span>До 10 файлов за раз · всего до 100 МБ</span>}
         <input
           type="file"
+          multiple={!data.document_id}
+          aria-label="Файлы документов"
           accept=".pdf,.jpg,.jpeg,.png,.docx,.xlsx,.xls"
-          onChange={(e) => setFile(e.target.files?.[0] || null)}
+          onChange={(e) => {
+            addFiles(Array.from(e.target.files || []));
+            e.target.value = '';
+          }}
         />
       </label>
+      {selectionError && (
+        <div className="callout error" role="alert">
+          {selectionError}
+        </div>
+      )}
+      {files.length > 0 && (
+        <ul className="upload-file-list">
+          {files.map((file, i) => (
+            <li key={i}>
+              <Paperclip size={15} />
+              <span>
+                {file.name}
+                <small>{(file.size / 1024).toFixed(0)} КБ</small>
+              </span>
+              <button
+                type="button"
+                className="icon-btn"
+                aria-label={'Убрать ' + file.name}
+                onClick={() => {
+                  setFiles(files.filter((_, n) => n !== i));
+                  setSelectionError('');
+                }}
+              >
+                <Trash2 size={16} />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       <label>
         Комментарий
         <textarea
@@ -819,7 +908,7 @@ export function DocumentForm({ data, onSaved }: Props) {
       </label>
       {data.document_id && (
         <div className="inline-note">
-          Будет создана версия {data.version + 1}. Предыдущая останется доступной владельцу.
+          Будет создана версия {data.version + 1}. Предыдущая останется в истории версий.
         </div>
       )}
       <FormFooter busy={busy} error={error} label="Загрузить" />
@@ -850,13 +939,11 @@ export function StatusForm({ data, onSaved }: Props) {
       <label>
         Статус заказа
         <select value={status} onChange={(e) => setStatus(e.target.value)}>
-          {statuses
-            .filter((s) => user.role === 'owner' || !['paused', 'cancelled'].includes(s))
-            .map((s) => (
-              <option value={s} key={s}>
-                {statusLabels[s]}
-              </option>
-            ))}
+          {statuses.map((s) => (
+            <option value={s} key={s}>
+              {statusLabels[s]}
+            </option>
+          ))}
         </select>
       </label>
       {['paused', 'cancelled'].includes(status) && (

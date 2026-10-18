@@ -27,6 +27,8 @@ export function auditActionLabel(action: string) {
         confirmed: 'Подтверждена операция',
         reserved: 'Сохранён налоговый резерв',
         comment_added: 'Добавлен комментарий',
+        max_configured: 'Настроены уведомления MAX',
+        max_recipient_updated: 'Обновлён получатель MAX',
       } as Record<string, string>
     )[action] || 'Обновлена запись'
   );
@@ -45,6 +47,7 @@ export function entityLabel(entity: string) {
         settings: 'Настройки',
         tax: 'Налоговый резерв',
         import: 'Импорт',
+        integration: 'Интеграция MAX',
       } as Record<string, string>
     )[entity] || 'Рабочее пространство'
   );
@@ -77,6 +80,9 @@ const labels: Record<string, string> = {
   role: 'Роль',
   active: 'Доступ активен',
   reason: 'Причина',
+  enabled: 'Уведомления включены',
+  reminder_minutes: 'Минут до срока',
+  token_changed: 'Токен обновлён',
 };
 function display(key: string, value: any) {
   if (value === null || value === undefined || value === '') return '—';

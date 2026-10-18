@@ -22,9 +22,9 @@ export const post = <T = any>(path: string, data: unknown) =>
   api<T>(path, { method: 'POST', body: JSON.stringify(data) });
 export const patch = <T = any>(path: string, data: unknown) =>
   api<T>(path, { method: 'PATCH', body: JSON.stringify(data) });
-export const upload = (path: string, file: File) => {
+export const upload = (path: string, file: File | File[]) => {
   const b = new FormData();
-  b.append('file', file);
+  for (const entry of Array.isArray(file) ? file : [file]) b.append('file', entry);
   return api(path, { method: 'POST', body: b });
 };
 export const money = (cents?: number) =>

@@ -8,7 +8,7 @@ import staticPlugin from '@fastify/static';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { z } from 'zod';
-import { AppError, hash, pool } from './db.js';
+import { AppError, databaseUnavailable, hash, pool } from './db.js';
 import { authRoutes } from './routes/auth.js';
 import { orderRoutes } from './routes/orders.js';
 import { financeRoutes } from './routes/finance.js';
@@ -16,6 +16,7 @@ import { taskRoutes } from './routes/tasks.js';
 import { documentRoutes } from './routes/documents.js';
 import { settingsRoutes } from './routes/settings.js';
 import { importRoutes } from './routes/imports.js';
+import { maxRoutes } from './routes/max.js';
 export async function buildApp(logger = false) {
   const app = Fastify({
     logger: logger
@@ -50,6 +51,18 @@ export async function buildApp(logger = false) {
     const origins = (process.env.APP_ORIGIN || 'http://localhost:5173')
       .split(',')
       .map((s) => s.trim());
+    // The same local app is commonly opened through either loopback hostname.
+    for (const origin of [...origins]) {
+      try {
+        const url = new URL(origin);
+        if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') {
+          url.hostname = url.hostname === 'localhost' ? '127.0.0.1' : 'localhost';
+          origins.push(url.origin);
+        }
+      } catch {
+        /* Invalid configured origins are never allowed. */
+      }
+    }
     if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
       const origin = req.headers.origin;
       if (origin && !origins.includes(origin))
@@ -78,6 +91,13 @@ export async function buildApp(logger = false) {
     reply.header('Cache-Control', 'no-store');
   });
   app.setErrorHandler((err: any, req, reply) => {
+    if (databaseUnavailable(err)) {
+      req.log.warn({ code: err.code || 'CONNECTION_LOST' }, 'PostgreSQL temporarily unavailable');
+      return reply.status(503).header('Retry-After', '5').send({
+        message:
+          'Связь с базой временно прервана. Подождите несколько секунд и обновите данные. Перед повтором оплаты проверьте журнал операций.',
+      });
+    }
     if (err instanceof z.ZodError) {
       reply.status(400).send({
         message: err.issues
@@ -133,7 +153,7 @@ export async function buildApp(logger = false) {
       return;
     }
     const status = err.statusCode || 500;
-    if (status >= 500) req.log.error(err);
+    if (status >= 500) req.log.error({ code: err.code, name: err.name }, 'Request failed');
     reply.status(status).send({
       message: status >= 500 ? 'Не удалось выполнить операцию. Повторите попытку' : err.message,
     });
@@ -142,7 +162,7 @@ export async function buildApp(logger = false) {
     async (api) => {
       api.get('/health', async () => {
         await pool.query('SELECT 1');
-        return { status: 'ok', app: 'LOOMA.CRM', version: '1.0.0' };
+        return { status: 'ok', app: 'LOOMA.CRM', version: '1.1.0' };
       });
       await authRoutes(api);
       await orderRoutes(api);
@@ -150,6 +170,7 @@ export async function buildApp(logger = false) {
       await financeRoutes(api);
       await documentRoutes(api);
       await settingsRoutes(api);
+      await maxRoutes(api);
       await importRoutes(api);
     },
     { prefix: '/api' },

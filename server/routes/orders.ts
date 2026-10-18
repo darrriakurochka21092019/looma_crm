@@ -11,6 +11,7 @@ import {
   uuid,
 } from '../security.js';
 import { canFinance, statuses, type User } from '../../shared/domain.js';
+import { enqueueTaskNotification } from '../max.js';
 export const clientSchema = z.object({
   type: z.enum(['person', 'company']).default('person'),
   name: z.string().trim().min(1).max(200),
@@ -215,6 +216,7 @@ export async function orderRoutes(app: FastifyInstance) {
       .object({
         q: z.string().max(200).default(''),
         status: z.enum(statuses).optional(),
+        scope: z.enum(['work', 'archive']).default('work'),
         client_id: uuid.optional(),
         page: z.coerce.number().int().min(1).default(1),
         limit: z.coerce.number().int().min(1).max(200).default(30),
@@ -222,8 +224,7 @@ export async function orderRoutes(app: FastifyInstance) {
       })
       .parse(req.query);
     const params: any[] = [`%${q.q}%`];
-    let where =
-      'NOT archived AND (title ILIKE $1 OR number ILIKE $1 OR client_name ILIKE $1 OR client_phone ILIKE $1)';
+    let where = `(title ILIKE $1 OR number ILIKE $1 OR client_name ILIKE $1 OR client_phone ILIKE $1) AND ${q.scope === 'archive' || ['paused', 'cancelled'].includes(q.status || '') ? "(archived OR status IN ('paused','cancelled'))" : "NOT archived AND status NOT IN ('paused','cancelled')"}`;
     if (q.status) {
       params.push(q.status);
       where += ` AND status=$${params.length}`;
@@ -316,23 +317,7 @@ export async function orderRoutes(app: FastifyInstance) {
         await db.query('SELECT * FROM order_items WHERE order_id=$1 ORDER BY position,id', [id])
       ).rows;
       const oldTotal = oldItems.reduce((s, i) => s + i.price * i.quantity, 0) - old.discount;
-      if (
-        req.user.role === 'manager' &&
-        ['contract', 'production', 'ready', 'closed'].includes(old.status)
-      ) {
-        const changed =
-          (b.discount !== undefined && b.discount !== old.discount) ||
-          (b.items &&
-            b.items.some(
-              (i, n) => i.price !== oldItems[n]?.price || i.quantity !== oldItems[n]?.quantity,
-            ));
-        if (changed) throw new AppError(403, 'После договора цену и количество меняет владелец');
-      }
-      const {
-        rows: [settings],
-      } = await db.query('SELECT data FROM settings WHERE id=1');
       if (b.status && ['paused', 'cancelled'].includes(b.status)) {
-        requireRole(req, 'owner');
         if (!b.reason?.trim()) throw new AppError(400, 'Укажите причину остановки или отмены');
       }
       if (b.status === 'production' && !(b.master_id || old.master_id))
@@ -348,20 +333,11 @@ export async function orderRoutes(app: FastifyInstance) {
       )
         throw new AppError(400, 'Завершите этапы производства и контроль качества');
       if (b.status === 'closed' && old.status !== 'closed') {
-        if (req.user.role === 'manager' && !settings.data.manager_can_close)
-          throw new AppError(403, 'Закрывать заказы может только владелец');
         if (!b.handed_over) throw new AppError(400, 'Подтвердите передачу изделия клиенту');
       }
       await validateAssignees(db, b.manager_id ?? old.manager_id, b.master_id ?? old.master_id);
       let newItems = b.items;
       if (newItems) {
-        const previous = oldItems;
-        // Managers may edit specifications and prices; protected planned costs remain server-side.
-        if (!canFinance(req.user.role)) {
-          if (previous.length !== newItems.length)
-            throw new AppError(403, 'Изменение состава изделий после создания доступно владельцу');
-          newItems = newItems.map((i, p) => ({ ...i, planned_cost: previous[p].planned_cost }));
-        }
         const planned = newItems.reduce((sum, i) => sum + (i.planned_cost || 0) * i.quantity, 0);
         if (!Number.isSafeInteger(planned) || planned > 9e12)
           throw new AppError(400, 'План затрат слишком большой');
@@ -415,6 +391,18 @@ export async function orderRoutes(app: FastifyInstance) {
           total: (newItems ?? oldItems).reduce((s, i) => s + i.price * i.quantity, 0) - o.discount,
         },
       );
+      if (
+        ['paused', 'cancelled'].includes(old.status) &&
+        !['paused', 'cancelled'].includes(status)
+      ) {
+        // Give resumed tasks a new notification generation; reminders cancelled
+        // while archived must not suppress the next active deadline reminder.
+        const { rows: resumed } = await db.query(
+          "UPDATE tasks SET version=version+1 WHERE order_id=$1 AND status<>'done' RETURNING *",
+          [id],
+        );
+        for (const task of resumed) await enqueueTaskNotification(db, task, 'updated');
+      }
       return projectOrder(o, req.user.role);
     });
   });
@@ -479,7 +467,7 @@ export async function orderRoutes(app: FastifyInstance) {
   app.get('/orders/:id/history', async (req) => {
     const id = uuid.parse((req.params as any).id);
     await accessibleOrder(req.user, id);
-    requireRole(req, 'owner', 'accountant');
+    requireRole(req, 'owner', 'manager', 'accountant');
     return (
       await pool.query(
         "SELECT a.*,u.name author_name FROM audit_events a LEFT JOIN users u ON u.id=a.author_id WHERE entity='order' AND entity_id=$1 ORDER BY created_at DESC LIMIT 200",

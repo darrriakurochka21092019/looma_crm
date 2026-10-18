@@ -4235,3 +4235,76 @@ textarea::placeholder {
   overflow-wrap: anywhere;
   line-height: 1.7;
 }
+/* Task and document workflows */
+.task-kind {
+  margin: 8px 0 18px;
+}
+.upload-file-list {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0 20px;
+}
+.upload-file-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid var(--border, #eceaf1);
+  padding: 10px 0;
+}
+.upload-file-list li > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.upload-file-list small,
+.max-recipient small,
+.max-deliveries small {
+  display: block;
+  color: var(--muted, #8a8794);
+  margin-top: 4px;
+  font-size: 12px;
+}
+.archive-note {
+  margin: 18px 0;
+}
+.archive-note b {
+  display: block;
+  margin-top: 7px;
+}
+.max-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0;
+}
+.max-help {
+  margin: 18px 0;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.max-help summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+.max-recipients {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0 28px;
+}
+.max-recipient {
+  border: 1px solid var(--border, #eceaf1);
+  border-radius: 14px;
+  padding: 18px;
+}
+.max-recipient > div:first-child {
+  margin-bottom: 14px;
+}
+.max-deliveries > div {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border, #eceaf1);
+  overflow-wrap: anywhere;
+}
+.max-settings .inline-note {
+  margin: 14px 0;
+}

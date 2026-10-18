@@ -176,7 +176,7 @@ export type DocumentRecord = {
   versions?: { version: number; created_at: string; name: string; size: number }[];
 };
 export function canFinance(role: Role) {
-  return role === 'owner' || role === 'accountant';
+  return role === 'owner' || role === 'manager' || role === 'accountant';
 }
 /** UI amounts arrive as decimal RUB strings. All domain arithmetic uses integer kopecks. */
 export function rublesToCents(value: string): number {

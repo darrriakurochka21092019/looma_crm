@@ -476,7 +476,7 @@ function App() {
                 {id === 'orders' && (
                   <span className="nav-count">
                     {dashboard?.counts
-                      ?.filter((v: any) => !['closed', 'cancelled'].includes(v.status))
+                      ?.filter((v: any) => !['closed', 'paused', 'cancelled'].includes(v.status))
                       .reduce((n: number, v: any) => n + v.count, 0) || 0}
                   </span>
                 )}
@@ -486,7 +486,7 @@ function App() {
           <div className="sidebar-bottom">
             <div className="workspace-note">
               <span className="green-dot" /> Локальное пространство
-              <span className="version">v1.0</span>
+              <span className="version">v1.1</span>
             </div>
             <button className="profile" onClick={() => open('profile')}>
               <span className="avatar">{user.name.slice(0, 1)}</span>
@@ -738,7 +738,7 @@ function App() {
     </AppContext.Provider>
   );
 }
-export function useLoad<T>(path: string) {
+export function useLoad<T>(path: string | null) {
   const { revision } = useApp();
   const [data, setData] = useState<T | null>(null),
     [error, setError] = useState('');
@@ -746,6 +746,7 @@ export function useLoad<T>(path: string) {
     let active = true;
     setData(null);
     setError('');
+    if (!path) return;
     api<T>(path)
       .then((d) => active && setData(d))
       .catch((e) => active && setError(e.message));
@@ -774,7 +775,7 @@ function Dashboard({ data, period }: { data: any; period: string }) {
   const financial = canFinance(user.role),
     s = data.summary;
   const active = data.counts
-    .filter((v: any) => !['closed', 'cancelled'].includes(v.status))
+    .filter((v: any) => !['closed', 'paused', 'cancelled'].includes(v.status))
     .reduce((n: number, v: any) => n + v.count, 0);
   const orders = data.orders;
   return (
@@ -1048,7 +1049,9 @@ export function OrderTable({ orders, compact = false }: { orders: Order[]; compa
               {user.role !== 'master' && <td className="nowrap">{money(o.total)}</td>}
               <td
                 className={
-                  o.due_date < day() && !['closed', 'cancelled'].includes(o.status) ? 'overdue' : ''
+                  o.due_date < day() && !['closed', 'paused', 'cancelled'].includes(o.status)
+                    ? 'overdue'
+                    : ''
                 }
               >
                 {dateLabel(o.due_date)}
@@ -1081,9 +1084,10 @@ function Orders({ initialQuery }: { initialQuery: string }) {
   const [q, setQ] = useState(initialQuery),
     [status, setStatus] = useState(''),
     [page, setPage] = useState(1),
-    [sort, setSort] = useState('due');
+    [sort, setSort] = useState('due'),
+    [scope, setScope] = useState('work');
   const { data, error } = useLoad<any>(
-    `/orders?q=${encodeURIComponent(q)}&page=${page}&sort=${sort}${status ? '&status=' + status : ''}`,
+    `/orders?q=${encodeURIComponent(q)}&page=${page}&sort=${sort}&scope=${scope}${status ? '&status=' + status : ''}`,
   );
   const { data: dash } = useLoad<any>('/dashboard');
   useEffect(() => {
@@ -1104,6 +1108,7 @@ function Orders({ initialQuery }: { initialQuery: string }) {
             className={'mini-stat ' + color + (status === s ? ' selected' : '')}
             onClick={() => {
               setStatus(status === s ? '' : s);
+              setScope('work');
               setPage(1);
             }}
           >
@@ -1132,6 +1137,28 @@ function Orders({ initialQuery }: { initialQuery: string }) {
               }}
             />
           </div>
+          <div className="segmented">
+            <button
+              className={scope === 'work' ? 'active' : ''}
+              onClick={() => {
+                setScope('work');
+                setStatus('');
+                setPage(1);
+              }}
+            >
+              В работе
+            </button>
+            <button
+              className={scope === 'archive' ? 'active' : ''}
+              onClick={() => {
+                setScope('archive');
+                setStatus('');
+                setPage(1);
+              }}
+            >
+              Архив
+            </button>
+          </div>
           <span className="results-count">{data?.total || 0} заказов</span>
           <div className="toolbar-spacer" />
           <select
@@ -1139,15 +1166,22 @@ function Orders({ initialQuery }: { initialQuery: string }) {
             value={status}
             onChange={(e) => {
               setStatus(e.target.value);
+              if (['paused', 'cancelled'].includes(e.target.value)) setScope('archive');
               setPage(1);
             }}
           >
             <option value="">Все статусы</option>
-            {statuses.map((s) => (
-              <option key={s} value={s}>
-                {statusLabels[s]}
-              </option>
-            ))}
+            {statuses
+              .filter((s) =>
+                scope === 'archive'
+                  ? ['paused', 'cancelled'].includes(s)
+                  : !['paused', 'cancelled'].includes(s),
+              )
+              .map((s) => (
+                <option key={s} value={s}>
+                  {statusLabels[s]}
+                </option>
+              ))}
           </select>
           <select aria-label="Сортировка" value={sort} onChange={(e) => setSort(e.target.value)}>
             <option value="due">По сроку</option>
@@ -1246,6 +1280,12 @@ function OrderDetail({ id }: { id: string }) {
           ))}
         </div>
       </section>
+      {['paused', 'cancelled'].includes(o.status) && (
+        <div className="callout archive-note">
+          Заказ в архиве и исключён из расчётов, задолженности и рабочих списков. Данные ниже
+          сохранены для истории. {o.status_reason && <b>Причина: {o.status_reason}</b>}
+        </div>
+      )}
       {tab === 'overview' && (
         <div className="detail-grid">
           <section className="card">
@@ -1622,10 +1662,11 @@ export function TaskRow({ task: t }: { task: Task }) {
 }
 export function Tasks({ orderId }: { orderId?: string }) {
   const { user, open, refresh, notify } = useApp();
-  const [scope, setScope] = useState('mine'),
-    [view, setView] = useState('board');
+  const [scope, setScope] = useState(['owner', 'manager'].includes(user.role) ? 'team' : 'mine'),
+    [view, setView] = useState('board'),
+    [kind, setKind] = useState('all');
   const { data, error } = useLoad<Task[]>(
-    `/tasks?scope=${scope}${orderId ? '&order_id=' + orderId : ''}`,
+    `/tasks?scope=${scope}&kind=${orderId ? 'all' : kind}${orderId ? '&order_id=' + orderId : ''}`,
   );
   return (
     <section className="card task-board-card">
@@ -1642,6 +1683,13 @@ export function Tasks({ orderId }: { orderId?: string }) {
           ))}
         </div>
         <div className="toolbar-spacer" />
+        {!orderId && (
+          <select aria-label="Тип задач" value={kind} onChange={(e) => setKind(e.target.value)}>
+            <option value="all">Все задачи</option>
+            <option value="order">По заказам</option>
+            <option value="standalone">Отдельные задачи</option>
+          </select>
+        )}
         <button className="btn" onClick={() => setView(view === 'board' ? 'list' : 'board')}>
           {view === 'board' ? 'Списком' : 'Канбан'}
         </button>
@@ -1664,7 +1712,7 @@ export function Tasks({ orderId }: { orderId?: string }) {
                     .filter((t) => t.status === s)
                     .map((t) => (
                       <article className="kanban-card" key={t.id}>
-                        <span className="eyebrow">{t.order_number || 'ВНУТРЕННЯЯ ЗАДАЧА'}</span>
+                        <span className="eyebrow">{t.order_number || 'ОТДЕЛЬНАЯ ЗАДАЧА'}</span>
                         <h3>{t.title}</h3>
                         <p>{t.description}</p>
                         <div className="kanban-meta">
@@ -1810,19 +1858,21 @@ export function Documents({ orderId }: { orderId?: string }) {
                       <Upload size={16} />
                     </button>
                   </div>
-                  {user.role === 'owner' && d.versions && d.versions.length > 1 && (
-                    <details className="document-versions">
-                      <summary>История версий ({d.versions.length})</summary>
-                      {d.versions.map((v) => (
-                        <a
-                          key={v.version}
-                          href={`/api/documents/${d.id}/download?version=${v.version}`}
-                        >
-                          Версия {v.version} · {dateLabel(v.created_at)} <Download size={13} />
-                        </a>
-                      ))}
-                    </details>
-                  )}
+                  {['owner', 'manager'].includes(user.role) &&
+                    d.versions &&
+                    d.versions.length > 1 && (
+                      <details className="document-versions">
+                        <summary>История версий ({d.versions.length})</summary>
+                        {d.versions.map((v) => (
+                          <a
+                            key={v.version}
+                            href={`/api/documents/${d.id}/download?version=${v.version}`}
+                          >
+                            Версия {v.version} · {dateLabel(v.created_at)} <Download size={13} />
+                          </a>
+                        ))}
+                      </details>
+                    )}
                 </article>
               ))}
             </div>

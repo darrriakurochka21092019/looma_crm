@@ -28,6 +28,7 @@ export function SettingsPage() {
         {[
           ['company', 'Компания и расчёты'],
           ['team', 'Сотрудники и роли'],
+          ['max', 'Уведомления в MAX'],
           ['template', 'Шаблон договора'],
           ['import', 'Импорт из Excel'],
           ['backup', 'Резервное копирование'],
@@ -42,12 +43,265 @@ export function SettingsPage() {
       <section className="card settings-content">
         {tab === 'company' && <CompanySettings initial={data} />}{' '}
         {tab === 'team' && <TeamSettings />}
+        {tab === 'max' && <MaxSettings />}
         {tab === 'template' && <TemplateSettings settings={data} />}{' '}
         {tab === 'import' && <ImportPage />}
         {tab === 'backup' && <BackupInfo />}
         {tab === 'audit' && <AuditSettings />}
       </section>
     </div>
+  );
+}
+function MaxSettings() {
+  const { data, error } = useLoad<any>('/settings/max');
+  const { notify, refresh } = useApp();
+  const [contacts, setContacts] = useState<{ id: string; name: string }[]>([]);
+  const [working, setWorking] = useState(false);
+  const [connectionError, setConnectionError] = useState('');
+  const check = async (discover = false) => {
+    setWorking(true);
+    setConnectionError('');
+    try {
+      const result = await post('/settings/max/' + (discover ? 'discover' : 'check'), {});
+      if (discover) {
+        setContacts(result.contacts);
+        if (!result.contacts.length)
+          setConnectionError(
+            'Новых пользователей не найдено. Откройте бота в MAX, нажмите «Начать» или отправьте ему сообщение, затем повторите поиск.',
+          );
+        else notify('Пользователи найдены. Выберите их напротив сотрудников.');
+      } else notify('Бот отвечает: ' + result.name);
+    } catch (err: any) {
+      setConnectionError(err.message);
+    } finally {
+      setWorking(false);
+    }
+  };
+  if (!data) return <LoadState error={error} />;
+  const deliveryLabels: Record<string, string> = {
+    pending: 'В очереди',
+    sending: 'Отправляется',
+    sent: 'Доставлено в MAX',
+    cancelled: 'Неактуально',
+    failed: 'Ошибка',
+  };
+  return (
+    <div className="max-settings">
+      <h2>Уведомления о задачах в MAX</h2>
+      <p className="muted">
+        Исполнитель получает назначения, изменения и завершение задач, напоминание перед сроком и
+        уведомление о просрочке. Для заказов в архиве уведомления отключены.
+      </p>
+      <MaxConfigForm key={data.version} data={data} />
+      <div className="max-actions">
+        <button className="btn" disabled={!data.configured || working} onClick={() => check()}>
+          Проверить бота
+        </button>
+        <button className="btn" disabled={!data.configured || working} onClick={() => check(true)}>
+          Найти ID сотрудников
+        </button>
+      </div>
+      <details className="max-help">
+        <summary>Как подключить MAX</summary>
+        <ol>
+          <li>Создайте бота через «MAX для бизнеса» и скопируйте его токен из настроек бота.</li>
+          <li>Вставьте токен в поле выше, включите уведомления и нажмите «Сохранить MAX».</li>
+          <li>Каждый сотрудник должен открыть этого бота в MAX и нажать «Начать».</li>
+          <li>
+            Нажмите «Найти ID сотрудников», выберите пользователя напротив нужного сотрудника и
+            сохраните привязку. Можно ввести известный числовой ID вручную.
+          </li>
+        </ol>
+        <p>
+          Поиск ID предназначен для локального запуска и выполняется только по нажатию кнопки. Если
+          бот уже использует Webhook в другом приложении, введите ID вручную. Для отправки сообщений
+          публичный домен не требуется.
+        </p>
+      </details>
+      <p className="inline-note">
+        Уведомления отправляются, пока запущен сервер CRM и есть интернет. После сна компьютера
+        очередь продолжит работу.
+      </p>
+      {connectionError && (
+        <div className="callout error" role="alert">
+          {connectionError}
+        </div>
+      )}
+      <h3>Получатели</h3>
+      <p className="muted">Привязку выполняет владелец. У каждого сотрудника — свой ID MAX.</p>
+      <div className="max-recipients">
+        {data.recipients.map((recipient: any) => (
+          <MaxRecipient
+            key={recipient.id + ':' + recipient.version}
+            recipient={recipient}
+            contacts={contacts}
+          />
+        ))}
+      </div>
+      <div className="card-heading">
+        <h3>Последние уведомления</h3>
+        <div className="max-actions">
+          <button className="btn small" onClick={refresh}>
+            Обновить
+          </button>
+          <button
+            className="btn small"
+            onClick={async () => {
+              try {
+                await post('/settings/max/retry', {});
+                refresh();
+                notify('Повторная отправка запланирована');
+              } catch (err: any) {
+                notify(err.message);
+              }
+            }}
+          >
+            Повторить ошибки
+          </button>
+        </div>
+      </div>
+      {data.deliveries.length ? (
+        <div className="max-deliveries">
+          {data.deliveries.map((n: any) => (
+            <div key={n.id}>
+              <b>{n.title}</b>
+              <small>
+                {n.assignee_name} · {deliveryLabels[n.status]} ·{' '}
+                {dateLabel(n.sent_at || n.created_at)}
+              </small>
+              {n.error && <p className="overdue">{n.error}</p>}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <Empty
+          title="Уведомлений пока нет"
+          text="После подключения получателей создайте или измените задачу."
+        />
+      )}
+    </div>
+  );
+}
+function MaxConfigForm({ data }: { data: any }) {
+  const { refresh, notify } = useApp();
+  const [enabled, setEnabled] = useState(data.enabled),
+    [token, setToken] = useState(''),
+    [minutes, setMinutes] = useState(String(data.reminder_minutes));
+  const { busy, error, submit } = useSubmit();
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        submit(async () => {
+          await patch('/settings/max', {
+            version: data.version,
+            enabled,
+            reminder_minutes: Number(minutes),
+            ...(token.trim() ? { token: token.trim() } : {}),
+          });
+          setToken('');
+          refresh();
+          notify('Настройки MAX сохранены');
+        });
+      }}
+    >
+      <label>
+        Токен бота
+        <input
+          type="password"
+          value={token}
+          autoComplete="new-password"
+          placeholder={
+            data.configured
+              ? 'Токен сохранён. Оставьте пустым, чтобы сохранить его'
+              : 'Вставьте токен бота MAX'
+          }
+          onChange={(e) => setToken(e.target.value)}
+        />
+      </label>
+      <label>
+        Напомнить за сколько минут до срока
+        <input
+          type="number"
+          min="1"
+          max="1440"
+          required
+          value={minutes}
+          onChange={(e) => setMinutes(e.target.value)}
+        />
+      </label>
+      <label className="checkbox-label">
+        <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+        Отправлять уведомления о задачах
+      </label>
+      <FormFooter busy={busy} error={error} label="Сохранить MAX" />
+    </form>
+  );
+}
+function MaxRecipient({
+  recipient: r,
+  contacts,
+}: {
+  recipient: any;
+  contacts: { id: string; name: string }[];
+}) {
+  const { refresh, notify } = useApp();
+  const [id, setId] = useState(r.max_user_id || ''),
+    [enabled, setEnabled] = useState(r.enabled ?? true);
+  const { busy, error, submit } = useSubmit();
+  return (
+    <form
+      className="max-recipient"
+      onSubmit={(e) => {
+        e.preventDefault();
+        submit(async () => {
+          await patch('/settings/max/recipients/' + r.id, {
+            max_user_id: id.trim(),
+            enabled,
+            version: r.version,
+          });
+          refresh();
+          notify('Получатель MAX сохранён');
+        });
+      }}
+    >
+      <div>
+        <b>{r.name}</b>
+        <small>
+          {roleLabels[r.role as User['role']]}
+          {!r.active && ' · отключён'}
+        </small>
+      </div>
+      <label>
+        ID в MAX
+        <input
+          inputMode="numeric"
+          value={id}
+          onChange={(e) => setId(e.target.value)}
+          required
+          aria-label={'ID MAX: ' + r.name}
+          placeholder="Числовой ID"
+        />
+      </label>
+      {contacts.length > 0 && (
+        <label>
+          Найденные пользователи
+          <select value="" onChange={(e) => setId(e.target.value)}>
+            <option value="">Выберите человека</option>
+            {contacts.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name} · {c.id}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      <label className="checkbox-label">
+        <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+        Получать уведомления
+      </label>
+      <FormFooter busy={busy} error={error} label="Сохранить привязку" />
+    </form>
   );
 }
 function CompanySettings({ initial }: { initial: any }) {
@@ -142,14 +396,9 @@ function CompanySettings({ initial }: { initial: any }) {
       <p className="muted">
         Это внутренний резерв. Он не заменяет расчёт налога с учётом НДС, взносов и льгот.
       </p>
-      <label className="checkbox-label">
-        <input
-          type="checkbox"
-          checked={v.manager_can_close}
-          onChange={(e) => set('manager_can_close', e.target.checked)}
-        />{' '}
-        Разрешить менеджерам закрывать заказы
-      </label>
+      <p className="inline-note">
+        Менеджер имеет доступ ко всем рабочим разделам. Настройки доступны только владельцу.
+      </p>
       <h3>Производственные этапы</h3>
       <label>
         По одному этапу на строку · для новых заказов

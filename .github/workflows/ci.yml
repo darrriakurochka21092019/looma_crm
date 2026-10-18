@@ -30,6 +30,7 @@ jobs:
         run: npm test
         env:
           TEST_RECOVERY: '1'
+          TEST_NATIVE_PG: '1'
           PG_CONTAINER: ${{ job.services.postgres.id }}
           PG_DUMP_BIN: ${{ github.workspace }}/scripts/ci-pg-dump.sh
           PG_RESTORE_BIN: ${{ github.workspace }}/scripts/ci-pg-restore.sh

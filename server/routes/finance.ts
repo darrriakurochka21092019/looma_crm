@@ -31,13 +31,13 @@ export async function report(db: DB, period: string) {
   const {
     rows: [cash],
   } = await db.query(
-    `SELECT COALESCE(sum(CASE WHEN kind='receipt' THEN amount WHEN kind='refund' THEN -amount ELSE 0 END),0)::bigint receipts,COALESCE(sum(CASE WHEN kind='expense_payment' THEN amount ELSE 0 END),0)::bigint payouts FROM money_movements WHERE status='confirmed' AND occurred_on >= $1 AND occurred_on < $2`,
+    `SELECT COALESCE(sum(CASE WHEN kind='receipt' THEN amount WHEN kind='refund' THEN -amount ELSE 0 END),0)::bigint receipts,COALESCE(sum(CASE WHEN kind='expense_payment' THEN amount ELSE 0 END),0)::bigint payouts FROM recorded_money_movements WHERE status='confirmed' AND occurred_on >= $1 AND occurred_on < $2`,
     [from, until],
   );
   const {
     rows: [profit],
   } = await db.query(
-    `SELECT COALESCE(sum(total),0)::bigint revenue,COALESCE(sum(actual_cost),0)::bigint direct_cost,COALESCE(sum(gross_profit),0)::bigint gross_profit,count(*)::int closed_count FROM order_totals WHERE closed_at AT TIME ZONE $3 >= $1::date AND closed_at AT TIME ZONE $3 < $2::date AND status='closed'`,
+    `SELECT COALESCE(sum(total),0)::bigint revenue,COALESCE(sum(actual_cost),0)::bigint direct_cost,COALESCE(sum(gross_profit),0)::bigint gross_profit,count(*)::int closed_count FROM recorded_order_totals WHERE closed_at AT TIME ZONE $3 >= $1::date AND closed_at AT TIME ZONE $3 < $2::date AND status='closed'`,
     [from, until, settings.timezone],
   );
   const {
@@ -49,13 +49,13 @@ export async function report(db: DB, period: string) {
   const {
     rows: [all],
   } = await db.query(
-    `SELECT COALESCE(sum(CASE WHEN kind='receipt' THEN amount ELSE -amount END),0)::bigint balance FROM money_movements WHERE status='confirmed' AND occurred_on < $1`,
+    `SELECT COALESCE(sum(CASE WHEN kind='receipt' THEN amount ELSE -amount END),0)::bigint balance FROM recorded_money_movements WHERE status='confirmed' AND occurred_on < $1`,
     [until],
   );
   const {
     rows: [debt],
   } = await db.query(
-    'SELECT COALESCE(sum(debt),0)::bigint debt,COALESCE(sum(overpayment),0)::bigint overpayment FROM order_totals WHERE NOT archived',
+    'SELECT COALESCE(sum(debt),0)::bigint debt,COALESCE(sum(overpayment),0)::bigint overpayment FROM recorded_order_totals WHERE NOT archived',
   );
   const management_profit = profit.gross_profit - overhead.overhead;
   const tax_base = Math.max(
@@ -65,12 +65,12 @@ export async function report(db: DB, period: string) {
   const estimate = reserveFor(tax_base, settings.tax_rate_bps);
   const {
     rows: [stored],
-  } = await db.query('SELECT * FROM tax_reservations WHERE period=$1', [period]);
-  const tax_reserve = stored ? stored.calculated_amount + stored.adjustment : estimate;
+  } = await db.query('SELECT * FROM current_tax_reservations WHERE period=$1', [period]);
+  const tax_reserve = stored ? Math.max(0, stored.calculated_amount + stored.adjustment) : estimate;
   const {
     rows: [reserved],
   } = await db.query(
-    "SELECT COALESCE(sum(calculated_amount+adjustment),0)::bigint reserved FROM tax_reservations WHERE period <= $1 AND status='reserved'",
+    "SELECT COALESCE(sum(GREATEST(0,calculated_amount+adjustment)),0)::bigint reserved FROM current_tax_reservations WHERE period <= $1 AND status='reserved'",
     [period],
   );
   const reserved_total = reserved.reserved + (stored ? 0 : estimate);
@@ -143,23 +143,23 @@ export async function financeRoutes(app: FastifyInstance) {
     const isMaster = req.user.role === 'master';
     const params = isMaster ? [req.user.id] : [];
     const where = isMaster
-      ? ' AND (master_id=$1 OR EXISTS(SELECT 1 FROM production_steps p WHERE p.order_id=order_totals.id AND p.assignee_id=$1))'
+      ? ' AND (master_id=$1 OR EXISTS(SELECT 1 FROM production_steps p WHERE p.order_id=recorded_order_totals.id AND p.assignee_id=$1))'
       : '';
     const orders = (
       await pool.query(
-        `SELECT * FROM order_totals WHERE NOT archived AND status NOT IN ('closed','cancelled') ${where} ORDER BY due_date LIMIT 6`,
+        `SELECT * FROM recorded_order_totals WHERE NOT archived AND status NOT IN ('closed','paused','cancelled') ${where} ORDER BY due_date LIMIT 6`,
         params,
       )
     ).rows;
     const counts = (
       await pool.query(
-        `SELECT status,count(*)::int count FROM order_totals WHERE NOT archived ${where} GROUP BY status`,
+        `SELECT status,count(*)::int count FROM recorded_order_totals WHERE NOT archived ${where} GROUP BY status`,
         params,
       )
     ).rows;
     const tasks = (
       await pool.query(
-        "SELECT t.*,u.name assignee_name,o.number order_number FROM tasks t JOIN users u ON u.id=t.assignee_id LEFT JOIN orders o ON o.id=t.order_id WHERE assignee_id=$1 AND t.status<>'done' ORDER BY due_at LIMIT 5",
+        "SELECT t.*,u.name assignee_name,o.number order_number FROM tasks t JOIN users u ON u.id=t.assignee_id LEFT JOIN orders o ON o.id=t.order_id WHERE assignee_id=$1 AND t.status<>'done' AND (o.id IS NULL OR (NOT o.archived AND o.status NOT IN ('paused','cancelled'))) ORDER BY due_at LIMIT 5",
         [req.user.id],
       )
     ).rows;
@@ -182,13 +182,6 @@ export async function financeRoutes(app: FastifyInstance) {
           description: o.client_name,
         });
     }
-    for (const o of orders.filter((o) => o.status === 'paused'))
-      warnings.push({
-        type: 'order',
-        id: o.id,
-        title: `${o.number} — заказ приостановлен`,
-        description: o.status_reason || o.title,
-      });
     const tomorrow = new Date(Date.parse(localDay()) + 86400000).toISOString().slice(0, 10);
     for (const o of orders.filter((o) => o.due_date === tomorrow))
       warnings.push({
@@ -207,7 +200,7 @@ export async function financeRoutes(app: FastifyInstance) {
     const chart = canFinance(req.user.role)
       ? (
           await pool.query(
-            "SELECT occurred_on AS point_date,sum(CASE WHEN kind='receipt' THEN amount ELSE -amount END)::bigint amount FROM money_movements WHERE status='confirmed' AND kind IN ('receipt','refund') AND occurred_on >= $1 AND occurred_on < $2 GROUP BY occurred_on ORDER BY occurred_on",
+            "SELECT occurred_on AS point_date,sum(CASE WHEN kind='receipt' THEN amount ELSE -amount END)::bigint amount FROM recorded_money_movements WHERE status='confirmed' AND kind IN ('receipt','refund') AND occurred_on >= $1 AND occurred_on < $2 GROUP BY occurred_on ORDER BY occurred_on",
             [from, until],
           )
         ).rows.map((r) => ({ day: r.point_date, amount: r.amount }))
@@ -233,23 +226,23 @@ export async function financeRoutes(app: FastifyInstance) {
       const { from, until } = periodDates(q.period);
       const movements = (
         await db.query(
-          `SELECT m.*,o.number order_number,e.category expense_category,u.name author_name FROM money_movements m LEFT JOIN orders o ON o.id=m.order_id LEFT JOIN expenses e ON e.id=m.expense_id LEFT JOIN users u ON u.id=m.author_id WHERE ${q.order_id ? '(m.order_id=$1 OR e.order_id=$1)' : 'm.occurred_on >= $1 AND m.occurred_on < $2'} ORDER BY occurred_on DESC,m.created_at DESC LIMIT 1000`,
+          `SELECT m.*,o.number order_number,e.category expense_category,u.name author_name FROM ${q.order_id ? 'money_movements' : 'recorded_money_movements'} m LEFT JOIN expenses e ON e.id=m.expense_id LEFT JOIN orders o ON o.id=COALESCE(m.order_id,e.order_id) LEFT JOIN users u ON u.id=m.author_id WHERE ${q.order_id ? '(m.order_id=$1 OR e.order_id=$1)' : 'm.occurred_on >= $1 AND m.occurred_on < $2'} ORDER BY occurred_on DESC,m.created_at DESC LIMIT 1000`,
           q.order_id ? [q.order_id] : [from, until],
         )
       ).rows;
       const expenses = (
         await db.query(
-          `SELECT e.*,o.number order_number,COALESCE(p.paid,0)::bigint paid,(e.amount-COALESCE(p.paid,0))::bigint outstanding FROM expenses e LEFT JOIN orders o ON o.id=e.order_id LEFT JOIN LATERAL (SELECT sum(amount) paid FROM money_movements WHERE expense_id=e.id AND status='confirmed') p ON true ${q.order_id ? 'WHERE e.order_id=$1' : ''} ORDER BY incurred_on DESC LIMIT 1000`,
+          `SELECT e.*,o.number order_number,COALESCE(p.paid,0)::bigint paid,(e.amount-COALESCE(p.paid,0))::bigint outstanding FROM ${q.order_id ? 'expenses' : 'recorded_expenses'} e LEFT JOIN orders o ON o.id=e.order_id LEFT JOIN LATERAL (SELECT sum(amount) paid FROM money_movements WHERE expense_id=e.id AND status='confirmed') p ON true ${q.order_id ? 'WHERE e.order_id=$1' : ''} ORDER BY incurred_on DESC LIMIT 1000`,
           q.order_id ? [q.order_id] : [],
         )
       ).rows;
       const debts = (
         await db.query(
-          'SELECT * FROM order_totals WHERE debt>0 AND NOT archived ORDER BY due_date LIMIT 1000',
+          'SELECT * FROM recorded_order_totals WHERE debt>0 AND NOT archived ORDER BY due_date LIMIT 1000',
         )
       ).rows.map((o) => projectOrder(o, req.user.role));
       const taxes = (
-        await db.query('SELECT * FROM tax_reservations ORDER BY period DESC LIMIT 120')
+        await db.query('SELECT * FROM current_tax_reservations ORDER BY period DESC LIMIT 120')
       ).rows;
       return { summary, movements, expenses, debts, taxes };
     });
@@ -484,7 +477,7 @@ export async function financeRoutes(app: FastifyInstance) {
       const {
         rows: [record],
       } = await db.query(
-        `INSERT INTO tax_reservations(period,base_amount,rate_bps,calculated_amount,adjustment,reason,status,payment_id,author_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(period) DO UPDATE SET base_amount=EXCLUDED.base_amount,rate_bps=EXCLUDED.rate_bps,calculated_amount=EXCLUDED.calculated_amount,adjustment=EXCLUDED.adjustment,reason=EXCLUDED.reason,status=EXCLUDED.status,payment_id=EXCLUDED.payment_id,author_id=EXCLUDED.author_id,created_at=now() RETURNING *`,
+        `INSERT INTO tax_reservations(period,base_amount,rate_bps,calculated_amount,adjustment,reason,status,payment_id,author_id,base_type) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(period) DO UPDATE SET base_type=EXCLUDED.base_type,base_amount=EXCLUDED.base_amount,rate_bps=EXCLUDED.rate_bps,calculated_amount=EXCLUDED.calculated_amount,adjustment=EXCLUDED.adjustment,reason=EXCLUDED.reason,status=EXCLUDED.status,payment_id=EXCLUDED.payment_id,author_id=EXCLUDED.author_id,created_at=now() RETURNING *`,
         [
           b.period,
           r.tax_base,
@@ -495,6 +488,7 @@ export async function financeRoutes(app: FastifyInstance) {
           b.status,
           b.status === 'paid' ? b.payment_id : null,
           req.user.id,
+          (await db.query('SELECT data FROM settings WHERE id=1')).rows[0].data.tax_base,
         ],
       );
       await audit(db, req.user.id, 'tax', record.id, 'reserved', r.tax_record, record);
@@ -509,12 +503,12 @@ export async function financeRoutes(app: FastifyInstance) {
       const r = await report(db, q.period);
       const orders = (
         await db.query(
-          'SELECT number,client_name,title,total,actual_cost,gross_profit,paid,debt,due_date,status FROM order_totals WHERE NOT archived ORDER BY due_date',
+          'SELECT number,client_name,title,total,actual_cost,gross_profit,paid,debt,due_date,status FROM recorded_order_totals WHERE NOT archived ORDER BY due_date',
         )
       ).rows;
       const movements = (
         await db.query(
-          'SELECT kind,amount,occurred_on,status,method,account,note FROM money_movements WHERE occurred_on >= $1 AND occurred_on < $2 ORDER BY occurred_on',
+          'SELECT kind,amount,occurred_on,status,method,account,note FROM recorded_money_movements WHERE occurred_on >= $1 AND occurred_on < $2 ORDER BY occurred_on',
           Object.values(periodDates(q.period)),
         )
       ).rows;

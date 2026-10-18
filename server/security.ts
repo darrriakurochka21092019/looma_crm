@@ -23,7 +23,7 @@ export function requireRole(req: FastifyRequest, ...roles: Role[]) {
 }
 export function requireFinance(req: FastifyRequest) {
   if (!canFinance(req.user.role))
-    throw new AppError(403, 'Финансовые данные доступны владельцу и бухгалтеру');
+    throw new AppError(403, 'Финансовые данные доступны владельцу, менеджеру и бухгалтеру');
 }
 export async function accessibleOrder(user: User, id: string, db: DB = pool, lock = false) {
   uuid.parse(id);

@@ -10,20 +10,70 @@ pg.types.setTypeParser(1082, (value) => value);
 export const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
   max: Number(process.env.DB_POOL_MAX || 12),
+  connectionTimeoutMillis: 8000,
+  idleTimeoutMillis: 10000,
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 10000,
+  application_name: 'LOOMA.CRM',
 });
+// PostgreSQL can close an idle socket (sleep, restart, network reset). pg removes it;
+// handling the event keeps the HTTP server alive so the next request can reconnect.
+pool.on('error', (err: any) => {
+  console.error('LOOMA.CRM: соединение с PostgreSQL прервано; будет создано новое.', {
+    code: err.code || 'CONNECTION_LOST',
+  });
+});
+pool.on('connect', (client) => {
+  // Also cover a checked-out client while application code is awaiting external I/O.
+  client.on('error', () => {});
+});
+export function databaseUnavailable(err: any) {
+  return (
+    [
+      'ECONNRESET',
+      'ECONNREFUSED',
+      'EPIPE',
+      'ETIMEDOUT',
+      'ENOTFOUND',
+      'EHOSTUNREACH',
+      '57P01',
+      '57P02',
+      '57P03',
+      '53300',
+      '08000',
+      '08001',
+      '08003',
+      '08006',
+    ].includes(err?.code) ||
+    /connection (terminated|timeout)|timeout exceeded when trying to connect|client has encountered a connection error/i.test(
+      err?.message || '',
+    )
+  );
+}
 export type DB = Pick<pg.PoolClient, 'query'>;
 export async function transaction<T>(fn: (db: pg.PoolClient) => Promise<T>): Promise<T> {
   const db = await pool.connect();
+  let broken = false;
+  const onError = () => {
+    broken = true;
+  };
+  db.on('error', onError);
   try {
     await db.query('BEGIN');
     const r = await fn(db);
     await db.query('COMMIT');
     return r;
   } catch (e) {
-    await db.query('ROLLBACK');
+    try {
+      await db.query('ROLLBACK');
+    } catch {
+      broken = true;
+    }
+    if (databaseUnavailable(e)) broken = true;
     throw e;
   } finally {
-    db.release();
+    db.off('error', onError);
+    db.release(broken);
   }
 }
 export async function audit(
