@@ -17,6 +17,7 @@ COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
 COPY --from=build --chown=node:node /app/dist-web ./dist-web
 COPY --chown=node:node db ./db
+COPY --chown=node:node templates ./templates
 COPY --chown=node:node package.json ./package.json
 RUN mkdir -p /app/storage && chown node:node /app/storage
 USER node

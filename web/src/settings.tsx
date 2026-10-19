@@ -1,5 +1,6 @@
 import { auditActionLabel, entityLabel } from './audit';
 import React, { useState } from 'react';
+import { DocumentPartyFields } from './document-party';
 import {
   Check,
   Copy,
@@ -364,6 +365,11 @@ function CompanySettings({ initial }: { initial: any }) {
           placeholder="Название, ИНН, адрес, банковские реквизиты"
         />
       </label>
+      <DocumentPartyFields
+        title="Реквизиты исполнителя для автозаполнения документов"
+        value={v.document_company || {}}
+        onChange={(value) => set('document_company', value)}
+      />
       <h3>Налоговый резерв</h3>
       <div className="form-grid">
         <label>

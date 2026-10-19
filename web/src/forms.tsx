@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { DocumentPartyFields } from './document-party';
 import { Plus, Trash2, Upload, Loader2, Check, MessageCircle, Paperclip } from 'lucide-react';
 import { post, patch, upload, api, money, decimal, day, key } from './api';
 import {
@@ -184,6 +185,11 @@ export function ClientForm({ data, onSaved }: Props) {
         value={v.consent_basis}
         onChange={(s) => set('consent_basis', s)}
         placeholder="Например: заключение и исполнение договора"
+      />
+      <DocumentPartyFields
+        title="Реквизиты для документов"
+        value={v.document_details || {}}
+        onChange={(details) => setV((current: any) => ({ ...current, document_details: details }))}
       />
       <FormFooter busy={busy} error={error} />
     </form>

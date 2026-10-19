@@ -81,6 +81,7 @@ import {
   CommentsForm,
 } from './forms';
 import { SettingsPage, ImportPage } from './settings';
+import { DocumentGenerationForm } from './document-generation';
 type Context = {
   user: User;
   users: User[];
@@ -486,7 +487,7 @@ function App() {
           <div className="sidebar-bottom">
             <div className="workspace-note">
               <span className="green-dot" /> Локальное пространство
-              <span className="version">v1.1</span>
+              <span className="version">v1.2</span>
             </div>
             <button className="profile" onClick={() => open('profile')}>
               <span className="avatar">{user.name.slice(0, 1)}</span>
@@ -697,6 +698,7 @@ function App() {
                 status: 'Изменить статус',
                 step: 'Производственный этап',
                 contract: 'Сформировать договор',
+                generate_documents: 'Создать документы из заказа',
                 plan: 'Плановый платёж',
                 tax: 'Налоговый резерв',
                 comments: 'Обсуждение задачи',
@@ -706,7 +708,7 @@ function App() {
             )[modal.type] || 'LOOMA.CRM'
           }
           onClose={close}
-          wide={['order', 'import'].includes(modal.type)}
+          wide={['order', 'import', 'generate_documents'].includes(modal.type)}
         >
           {modal.type === 'client' && <ClientForm data={modal.data} onSaved={saved} />}
           {modal.type === 'order' && <OrderForm data={modal.data} onSaved={saved} />}
@@ -719,6 +721,9 @@ function App() {
           {modal.type === 'status' && <StatusForm data={modal.data} onSaved={saved} />}
           {modal.type === 'step' && <StepForm data={modal.data} onSaved={saved} />}
           {modal.type === 'contract' && <ContractForm data={modal.data} onSaved={saved} />}
+          {modal.type === 'generate_documents' && (
+            <DocumentGenerationForm data={modal.data} onSaved={saved} />
+          )}
           {modal.type === 'plan' && <PlanForm data={modal.data} onSaved={saved} />}
           {modal.type === 'tax' && <TaxForm data={modal.data} onSaved={saved} />}
           {modal.type === 'comments' && <CommentsForm data={modal.data} onSaved={saved} />}
@@ -1257,6 +1262,12 @@ function OrderDetail({ id }: { id: string }) {
             </p>
           </div>
           <div className="detail-actions">
+            {financial && (
+              <button className="btn dark" onClick={() => open('generate_documents', o)}>
+                <FileText size={16} />
+                Создать документы
+              </button>
+            )}
             {commercial && (
               <>
                 <button className="btn" onClick={() => open('order', o)}>
@@ -1400,7 +1411,7 @@ function OrderDetail({ id }: { id: string }) {
                 )}
                 {commercial && (
                   <button className="btn full" onClick={() => open('contract', o)}>
-                    <FileText size={16} /> Сформировать договор
+                    <FileText size={16} /> Договор по своему шаблону
                   </button>
                 )}
               </section>
@@ -1813,6 +1824,12 @@ export function Documents({ orderId }: { orderId?: string }) {
             ))}
           </select>
           <div className="toolbar-spacer" />
+          {orderId && user.role !== 'master' && (
+            <button className="btn" onClick={() => open('generate_documents', { id: orderId })}>
+              <FileText size={16} />
+              Создать документы
+            </button>
+          )}
           <button className="btn dark" onClick={() => open('document', { order_id: orderId })}>
             <Upload size={16} /> Прикрепить
           </button>

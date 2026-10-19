@@ -1,11 +1,12 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import argon2 from 'argon2';
 import * as XLSX from '@e965/xlsx';
+import PizZip from 'pizzip';
 const testUrl = process.env.TEST_DATABASE_URL;
 if (!testUrl || !new URL(testUrl).pathname.includes('test'))
   throw new Error(
@@ -1133,3 +1134,325 @@ test(
     }
   },
 );
+
+let documentOrder: any, generatedDocuments: any[], documentPhoto: any;
+async function generationRequest(
+  kinds = ['contract', 'appendix', 'proposal', 'invoice'],
+  role = 'owner',
+) {
+  const d = await call('GET', `/orders/${documentOrder.id}/document-data`, undefined, role);
+  return {
+    idempotency_key: randomUUID(),
+    source_token: d.source_token,
+    kinds,
+    buyer: { ...d.buyer, name: 'Тестовый покупатель документов', inn: '0000000000' },
+    seller: { ...d.seller, name: 'ИП Тестов Иван Иванович', signature: 'И.И. Тестов' },
+    fields: {
+      ...d.fields,
+      city: 'Москва',
+      delivery_terms: 'Доставка и сборка включены',
+      advance_amount: 100,
+    },
+    item_images: d.item_images,
+    item_descriptions: d.item_descriptions,
+    save_client: false,
+    save_company: false,
+  };
+}
+test('Автодокументы: четыре шаблона из карточки, без финансовых операций; реквизиты и версии сохраняются', async () => {
+  const login = await app.inject({
+    method: 'POST',
+    url: '/api/auth/login',
+    remoteAddress: '127.0.0.2',
+    headers: { 'x-looma-client': 'web' },
+    payload: { email: 'owner@test.local', password },
+  });
+  assert.equal(login.statusCode, 200, login.body);
+  sessions.owner = String(login.headers['set-cookie']).split(';')[0];
+  const accountantLogin = await app.inject({
+    method: 'POST',
+    url: '/api/auth/login',
+    remoteAddress: '127.0.0.2',
+    headers: { 'x-looma-client': 'web' },
+    payload: { email: 'accountant@test.local', password: 'Changed-password-2026' },
+  });
+  assert.equal(accountantLogin.statusCode, 200, accountantLogin.body);
+  sessions.accountant = String(accountantLogin.headers['set-cookie']).split(';')[0];
+  for (const role of ['manager', 'master']) {
+    const signed = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      remoteAddress: '127.0.0.2',
+      headers: { 'x-looma-client': 'web' },
+      payload: { email: role + '@test.local', password },
+    });
+    assert.equal(signed.statusCode, 200, signed.body);
+    sessions[role] = String(signed.headers['set-cookie']).split(';')[0];
+  }
+  const c = await call('POST', '/clients', {
+    name: 'Тестовый клиент документов',
+    phone: '+7 999 000 87 12',
+    address: 'Москва, Тестовая улица, 42',
+  });
+  const made = await call('POST', '/orders', {
+    client_id: c.id,
+    title: 'Заказ для документов',
+    due_date: '2026-12-31',
+    master_id: users.master.id,
+    discount: 1,
+    items: [{ ...item('Автодокумент', 100, 3), notes: 'INTERNAL_COST_DO_NOT_EXPORT' }],
+    idempotency_key: randomUUID(),
+  });
+  documentOrder = await call('GET', '/orders/' + made.id);
+  await call('POST', `/orders/${made.id}/payment-plans`, {
+    title: 'Аванс',
+    amount: 100,
+    due_date: '2026-11-01',
+  });
+  const d = await call('GET', `/orders/${made.id}/document-data`);
+  assert.equal(d.buyer.name, c.name);
+  assert.equal(d.fields.delivery_address, c.address);
+  assert.equal(d.fields.advance_amount, 100);
+  await call('GET', `/orders/${made.id}/document-data`, undefined, 'master', 403);
+  const before = (
+    await pool.query(
+      'SELECT (SELECT count(*)::int FROM money_movements) movements,(SELECT count(*)::int FROM expenses) expenses',
+    )
+  ).rows[0];
+  const b = await generationRequest();
+  b.save_client = true;
+  b.save_company = true;
+  const generated = await call('POST', `/orders/${made.id}/generate-documents`, b);
+  generatedDocuments = generated.documents;
+  assert.equal(generatedDocuments.length, 4);
+  assert.deepEqual(await call('POST', `/orders/${made.id}/generate-documents`, b), generated);
+  assert.equal(
+    (await pool.query('SELECT count(*)::int n FROM documents WHERE order_id=$1', [made.id])).rows[0]
+      .n,
+    4,
+  );
+  assert.deepEqual(
+    (
+      await pool.query(
+        'SELECT (SELECT count(*)::int FROM money_movements) movements,(SELECT count(*)::int FROM expenses) expenses',
+      )
+    ).rows[0],
+    before,
+  );
+  const after = await call('GET', '/orders/' + made.id);
+  assert.equal(after.total, 299);
+  assert.equal(after.paid, 0);
+  assert.equal(after.debt, 299);
+  assert.equal(
+    (await pool.query('SELECT document_details FROM clients WHERE id=$1', [c.id])).rows[0]
+      .document_details.inn,
+    '0000000000',
+  );
+  assert.equal(
+    (await pool.query('SELECT data FROM settings WHERE id=1')).rows[0].data.document_company.name,
+    b.seller.name,
+  );
+  for (const file of generatedDocuments) {
+    const r = await call('GET', `/documents/${file.id}/download?version=1`);
+    const z = new PizZip(r.rawPayload);
+    const xml = Object.entries(z.files)
+      .filter(([n]) => n.endsWith('.xml'))
+      .map(([, f]) => f.asText())
+      .join('\n');
+    assert.doesNotMatch(xml, /\{[#/]?[a-z_]+\}|INTERNAL_COST_DO_NOT_EXPORT/);
+    assert.match(xml, /Тестовый покупатель документов/);
+    await call('GET', `/documents/${file.id}/download`, undefined, 'master', 403);
+    await call(
+      'GET',
+      `/documents/${file.id}/download`,
+      undefined,
+      'accountant',
+      file.kind === 'invoice' ? 200 : 403,
+    );
+  }
+  const query = generatedDocuments.map((d) => d.id + ':1').join(',');
+  const zip = await call('GET', `/orders/${made.id}/document-bundle?files=${query}`);
+  assert.equal(Object.values(new PizZip(zip.rawPayload).files).filter((f) => !f.dir).length, 4);
+  await call(
+    'GET',
+    `/orders/${made.id}/document-bundle?files=${query}`,
+    undefined,
+    'accountant',
+    403,
+  );
+  const v = (
+    await pool.query('SELECT generation_data FROM document_versions WHERE document_id=$1', [
+      generatedDocuments[0].id,
+    ])
+  ).rows[0].generation_data;
+  assert.equal(v.fields.advance_amount, 100);
+  assert.equal(v.total, 299);
+});
+
+test('Автодокументы: бухгалтеру только накладная; менеджер формирует документы без доступа к настройкам', async () => {
+  const base = await generationRequest(['invoice'], 'accountant');
+  assert.deepEqual(base.item_images, {});
+  await call(
+    'POST',
+    `/orders/${documentOrder.id}/generate-documents`,
+    { ...base, kinds: ['contract'] },
+    'accountant',
+    403,
+  );
+  await call(
+    'POST',
+    `/orders/${documentOrder.id}/generate-documents`,
+    { ...base, save_client: true },
+    'accountant',
+    403,
+  );
+  await call(
+    'POST',
+    `/orders/${documentOrder.id}/generate-documents`,
+    { ...base, save_company: true },
+    'accountant',
+    403,
+  );
+  const invoice = await call(
+    'POST',
+    `/orders/${documentOrder.id}/generate-documents`,
+    base,
+    'accountant',
+  );
+  assert.equal(invoice.documents[0].version, 2);
+  await call(
+    'GET',
+    `/documents/${invoice.documents[0].id}/download?version=1`,
+    undefined,
+    'accountant',
+    403,
+  );
+  await call(
+    'GET',
+    `/orders/${documentOrder.id}/document-bundle?files=${invoice.documents[0].id}:1`,
+    undefined,
+    'accountant',
+    403,
+  );
+  const manager = await generationRequest(['proposal'], 'manager');
+  await call(
+    'POST',
+    `/orders/${documentOrder.id}/generate-documents`,
+    { ...manager, save_company: true },
+    'manager',
+    403,
+  );
+  await call('GET', '/settings', undefined, 'manager', 403);
+  const result = await call(
+    'POST',
+    `/orders/${documentOrder.id}/generate-documents`,
+    manager,
+    'manager',
+  );
+  assert.equal(result.documents[0].version, 2);
+  const versions = await call('GET', `/documents?order_id=${documentOrder.id}`);
+  assert.equal(versions.find((d: any) => d.id === result.documents[0].id).versions.length, 2);
+});
+
+test('Автодокументы: защита от устаревшей карточки, чужих фотографий и повреждённого изображения', async () => {
+  const stale = await generationRequest(['appendix']);
+  await pool.query('UPDATE clients SET notes=$2,version=version+1 WHERE id=$1', [
+    documentOrder.client_id,
+    'Уточнены данные',
+  ]);
+  await call('POST', `/orders/${documentOrder.id}/generate-documents`, stale, 'owner', 409);
+  const current = await generationRequest(['appendix']);
+  await call(
+    'POST',
+    `/orders/${documentOrder.id}/generate-documents`,
+    { ...current, item_images: { [documentOrder.items[0].id]: doc.id } },
+    'owner',
+    400,
+  );
+  const invalid = await file(
+    `/documents?order_id=${documentOrder.id}&category=photo&visibility=commercial`,
+    'broken.png',
+    Buffer.from('89504e470d0a1a0a', 'hex'),
+  );
+  const broken = await generationRequest(['appendix']);
+  broken.item_images = { [documentOrder.items[0].id]: invalid.id };
+  await call('POST', `/orders/${documentOrder.id}/generate-documents`, broken, 'owner', 400);
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jBuoAAAAASUVORK5CYII=',
+    'base64',
+  );
+  documentPhoto = await file(
+    `/documents?order_id=${documentOrder.id}&category=photo&visibility=commercial`,
+    'item.png',
+    png,
+  );
+  const good = await generationRequest(['appendix', 'proposal']);
+  good.item_images = { [documentOrder.items[0].id]: documentPhoto.id };
+  const r = await call('POST', `/orders/${documentOrder.id}/generate-documents`, good);
+  for (const d of r.documents) {
+    const f = await call('GET', `/documents/${d.id}/download`);
+    assert.ok(Object.keys(new PizZip(f.rawPayload).files).some((n) => n.includes('/media/looma-')));
+  }
+  const saved = await call('GET', `/orders/${documentOrder.id}/document-data`);
+  assert.equal(saved.item_images[documentOrder.items[0].id], documentPhoto.id);
+  assert.deepEqual(
+    (await call('GET', `/orders/${documentOrder.id}/document-data`, undefined, 'accountant'))
+      .item_images,
+    {},
+  );
+  const noPhoto = await generationRequest(['proposal']);
+  noPhoto.item_images = {};
+  const without = await call('POST', `/orders/${documentOrder.id}/generate-documents`, noPhoto);
+  const download = await call('GET', `/documents/${without.documents[0].id}/download`);
+  assert.equal(
+    Object.keys(new PizZip(download.rawPayload).files).some((n) => n.includes('/media/looma-')),
+    false,
+  );
+});
+
+test('Автодокументы: ошибка квоты откатывает весь комплект, версии, файлы и реквизиты', async () => {
+  const used = (await pool.query('SELECT COALESCE(sum(size),0)::bigint size FROM file_blobs'))
+    .rows[0].size;
+  const contract = generatedDocuments.find((d) => d.kind === 'contract');
+  const contractSize = (
+    await pool.query('SELECT size FROM document_versions WHERE document_id=$1 AND version=1', [
+      contract.id,
+    ])
+  ).rows[0].size;
+  const original = (await pool.query('SELECT data FROM settings WHERE id=1')).rows[0].data;
+  const before = (
+    await pool.query('SELECT id,current_version FROM documents WHERE order_id=$1 ORDER BY id', [
+      documentOrder.id,
+    ])
+  ).rows;
+  const files = (await readdir(dir)).sort();
+  try {
+    await pool.query(
+      "UPDATE settings SET data=jsonb_set(data,'{storage_quota_mb}',$1::jsonb) WHERE id=1",
+      [JSON.stringify((used + contractSize + 100) / 1024 / 1024)],
+    );
+    const b = await generationRequest(['contract', 'appendix']);
+    b.save_client = true;
+    b.buyer.name = 'Не должно сохраниться';
+    await call('POST', `/orders/${documentOrder.id}/generate-documents`, b, 'owner', 400);
+    assert.deepEqual(
+      (
+        await pool.query('SELECT id,current_version FROM documents WHERE order_id=$1 ORDER BY id', [
+          documentOrder.id,
+        ])
+      ).rows,
+      before,
+    );
+    assert.deepEqual((await readdir(dir)).sort(), files);
+    assert.notEqual(
+      (
+        await pool.query('SELECT document_details FROM clients WHERE id=$1', [
+          documentOrder.client_id,
+        ])
+      ).rows[0].document_details.name,
+      b.buyer.name,
+    );
+  } finally {
+    await pool.query('UPDATE settings SET data=$1 WHERE id=1', [original]);
+  }
+});

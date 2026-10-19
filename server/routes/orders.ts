@@ -12,6 +12,7 @@ import {
 } from '../security.js';
 import { canFinance, statuses, type User } from '../../shared/domain.js';
 import { enqueueTaskNotification } from '../max.js';
+import { documentPartySchema } from '../../shared/document-generation.js';
 export const clientSchema = z.object({
   type: z.enum(['person', 'company']).default('person'),
   name: z.string().trim().min(1).max(200),
@@ -28,6 +29,7 @@ export const clientSchema = z.object({
   source: z.string().max(100).default(''),
   notes: z.string().max(5000).default(''),
   consent_basis: z.string().max(1000).default(''),
+  document_details: documentPartySchema.optional(),
 });
 export const itemSchema = z.object({
   kind: z.string().min(1).max(100),
@@ -41,6 +43,7 @@ export const itemSchema = z.object({
   notes: z.string().max(5000).default(''),
   price: money,
   planned_cost: money.optional(),
+  photo_document_id: uuid.nullable().optional(),
 });
 export const orderSchema = z.object({
   client_id: uuid,
@@ -120,8 +123,18 @@ async function insertItem(
   role: string,
   position = 0,
 ) {
+  if (
+    i.photo_document_id &&
+    !(
+      await db.query(
+        'SELECT 1 FROM documents d JOIN document_versions v ON v.document_id=d.id AND v.version=d.current_version WHERE d.id=$1 AND d.order_id=$2 AND v.mime IN ($3,$4)',
+        [i.photo_document_id, id, 'image/png', 'image/jpeg'],
+      )
+    ).rowCount
+  )
+    throw new AppError(400, 'Фото изделия должно быть изображением из этого заказа');
   await db.query(
-    'INSERT INTO order_items(order_id,kind,model,quantity,dimensions,fabric,color,filling,mechanism,notes,price,planned_cost,position) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)',
+    'INSERT INTO order_items(order_id,kind,model,quantity,dimensions,fabric,color,filling,mechanism,notes,price,planned_cost,position,photo_document_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)',
     [
       id,
       i.kind,
@@ -136,6 +149,7 @@ async function insertItem(
       i.price,
       canFinance(role as any) ? i.planned_cost || 0 : 0,
       position,
+      i.photo_document_id || null,
     ],
   );
 }
@@ -172,8 +186,19 @@ export async function orderRoutes(app: FastifyInstance) {
       const {
         rows: [c],
       } = await db.query(
-        'INSERT INTO clients(type,name,phone,email,address,details,source,notes,consent_basis) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',
-        Object.values(b),
+        'INSERT INTO clients(type,name,phone,email,address,details,source,notes,consent_basis,document_details) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *',
+        [
+          b.type,
+          b.name,
+          b.phone,
+          b.email,
+          b.address,
+          b.details,
+          b.source,
+          b.notes,
+          b.consent_basis,
+          b.document_details || {},
+        ],
       );
       await audit(db, req.user.id, 'client', c.id, 'created', null, b);
       return c;
@@ -193,7 +218,7 @@ export async function orderRoutes(app: FastifyInstance) {
       const {
         rows: [c],
       } = await db.query(
-        'UPDATE clients SET type=$2,name=$3,phone=$4,email=$5,address=$6,details=$7,source=$8,notes=$9,consent_basis=$10,version=version+1 WHERE id=$1 RETURNING *',
+        'UPDATE clients SET type=$2,name=$3,phone=$4,email=$5,address=$6,details=$7,source=$8,notes=$9,consent_basis=$10,document_details=$11,version=version+1 WHERE id=$1 RETURNING *',
         [
           id,
           b.type,
@@ -205,6 +230,7 @@ export async function orderRoutes(app: FastifyInstance) {
           b.source,
           b.notes,
           b.consent_basis,
+          b.document_details ?? old.document_details,
         ],
       );
       await audit(db, req.user.id, 'client', id, 'updated', old, c);

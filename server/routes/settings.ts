@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { AppError, audit, pool, transaction } from '../db.js';
 import { requireRole } from '../security.js';
 import { fileBytes, removeOrphan, storeFile, validateFile } from '../files.js';
+import { documentPartySchema } from '../../shared/document-generation.js';
 export async function settingsRoutes(app: FastifyInstance) {
   app.get('/company', async () => {
     const {
@@ -21,6 +22,7 @@ export async function settingsRoutes(app: FastifyInstance) {
         version: z.number().int(),
         company_name: z.string().trim().min(1).max(200),
         legal_details: z.string().max(10000),
+        document_company: documentPartySchema.optional(),
         timezone: z.literal(process.env.COMPANY_TIMEZONE || 'Europe/Moscow'),
         tax_regime: z.string().max(200),
         tax_base: z.enum(['receipts', 'management_profit']),

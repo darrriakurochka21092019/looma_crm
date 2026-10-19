@@ -14,6 +14,7 @@ import { orderRoutes } from './routes/orders.js';
 import { financeRoutes } from './routes/finance.js';
 import { taskRoutes } from './routes/tasks.js';
 import { documentRoutes } from './routes/documents.js';
+import { documentGenerationRoutes } from './routes/document-generation.js';
 import { settingsRoutes } from './routes/settings.js';
 import { importRoutes } from './routes/imports.js';
 import { maxRoutes } from './routes/max.js';
@@ -162,13 +163,14 @@ export async function buildApp(logger = false) {
     async (api) => {
       api.get('/health', async () => {
         await pool.query('SELECT 1');
-        return { status: 'ok', app: 'LOOMA.CRM', version: '1.1.0' };
+        return { status: 'ok', app: 'LOOMA.CRM', version: '1.2.0' };
       });
       await authRoutes(api);
       await orderRoutes(api);
       await taskRoutes(api);
       await financeRoutes(api);
       await documentRoutes(api);
+      await documentGenerationRoutes(api);
       await settingsRoutes(api);
       await maxRoutes(api);
       await importRoutes(api);

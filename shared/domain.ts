@@ -62,6 +62,8 @@ export const documentCategories = {
   receipt: 'Чек',
   act: 'Акт',
   photo: 'Фото',
+  proposal: 'Коммерческое предложение',
+  invoice: 'Товарная накладная',
   other: 'Прочее',
 } as const;
 export type User = { id: string; name: string; email: string; role: Role; active: boolean };
@@ -76,6 +78,7 @@ export type Client = {
   source: string;
   notes: string;
   consent_basis: string;
+  document_details?: import('./document-generation.js').DocumentParty;
   version: number;
   created_at: string;
 };

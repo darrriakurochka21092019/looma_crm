@@ -70,6 +70,34 @@ const downloaded = Buffer.from(
 );
 assert.deepEqual(downloaded, bytes);
 assert.equal((await (await request(`/api/orders/${order.id}`)).json()).total, 12000000);
+const data = await (await request(`/api/orders/${order.id}/document-data`)).json();
+const generated = await (
+  await request(`/api/orders/${order.id}/generate-documents`, {
+    method: 'POST',
+    body: {
+      idempotency_key: randomUUID(),
+      source_token: data.source_token,
+      kinds: ['contract', 'appendix', 'proposal', 'invoice'],
+      buyer: data.buyer,
+      seller: data.seller,
+      fields: {
+        ...data.fields,
+        city: 'Москва',
+        delivery_address: 'Тестовый адрес CI',
+        delivery_terms: 'Доставка включена',
+      },
+      item_images: {},
+      item_descriptions: data.item_descriptions,
+    },
+  })
+).json();
+assert.equal(generated.documents.length, 4);
+for (const file of generated.documents) {
+  const bytes = Buffer.from(
+    await (await request(`/api/documents/${file.id}/download`)).arrayBuffer(),
+  );
+  assert.equal(bytes.subarray(0, 2).toString(), 'PK');
+}
 console.log(
-  'Docker application verified: static bundle, owner login, client, order and document round trip.',
+  'Application verified: static bundle, owner login, client, order, uploads and all four generated templates.',
 );
