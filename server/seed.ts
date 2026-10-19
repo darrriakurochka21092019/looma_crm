@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import argon2 from 'argon2';
+import { hashPassword } from './passwords.js';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { pool, transaction, audit } from './db.js';
@@ -8,10 +8,13 @@ import { insertOrder } from './routes/orders.js';
 import { localDay } from './routes/finance.js';
 import type { User } from '../shared/domain.js';
 export async function seed(demo = process.argv.includes('--demo')) {
-  const password = process.env.SEED_PASSWORD;
-  if (!password || password === 'CHANGE_ME' || password.length < 12)
-    throw new Error('Установите SEED_PASSWORD длиной от 12 символов (npm run setup)');
-  const passwordHash = await argon2.hash(password, { type: argon2.argon2id });
+  let passwordHash: string | undefined;
+  const initialPasswordHash = async () => {
+    const password = process.env.SEED_PASSWORD;
+    if (!password || password === 'CHANGE_ME' || password.length < 12)
+      throw new Error('Установите SEED_PASSWORD длиной от 12 символов (npm run setup)');
+    return (passwordHash ??= await hashPassword(password));
+  };
   await transaction(async (db) => {
     await db.query('SELECT pg_advisory_xact_lock(71630924)');
     const {
@@ -22,7 +25,7 @@ export async function seed(demo = process.argv.includes('--demo')) {
       owner = (
         await db.query(
           "INSERT INTO users(name,email,role,password_hash) VALUES('Владелец','owner@looma.local','owner',$1) RETURNING id,name,email,role,active",
-          [passwordHash],
+          [await initialPasswordHash()],
         )
       ).rows[0];
       await audit(db, owner.id, 'user', owner.id, 'owner_initialized');
@@ -41,7 +44,7 @@ export async function seed(demo = process.argv.includes('--demo')) {
       demoUsers[role] = (
         await db.query(
           'INSERT INTO users(name,email,role,password_hash) VALUES($1,$2,$3,$4) ON CONFLICT(email) DO UPDATE SET name=EXCLUDED.name RETURNING id,name,email,role,active',
-          [name, `${role}@looma.local`, role, passwordHash],
+          [name, `${role}@looma.local`, role, await initialPasswordHash()],
         )
       ).rows[0];
     const today = localDay();
@@ -238,9 +241,11 @@ export async function seed(demo = process.argv.includes('--demo')) {
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
+    console.log('Проверяется структура базы PostgreSQL…');
     await migrate();
+    console.log('Проверяется учётная запись владельца…');
     await seed();
-    console.log('Начальная учётная запись создана. Пароль — SEED_PASSWORD из .env');
+    console.log('База и учётная запись владельца готовы. Существующий пароль сохранён.');
   } finally {
     await pool.end();
   }

@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import argon2 from 'argon2';
+import { hashPassword, verifyPassword } from '../passwords.js';
 import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { AppError, audit, hash, pool, transaction } from '../db.js';
@@ -12,7 +12,7 @@ const cookieOptions = () => ({
   maxAge: 60 * 60 * 12,
 });
 export async function authRoutes(app: FastifyInstance) {
-  const dummyHash = await argon2.hash(randomBytes(32), { type: argon2.argon2id });
+  const dummyHash = await hashPassword(randomBytes(32));
   app.post(
     '/auth/login',
     { config: { rateLimit: { max: 8, timeWindow: '1 minute' } } },
@@ -29,7 +29,7 @@ export async function authRoutes(app: FastifyInstance) {
       const {
         rows: [u],
       } = await pool.query('SELECT * FROM users WHERE email=$1 AND active', [b.email]);
-      const valid = await argon2.verify(u?.password_hash || dummyHash, b.password);
+      const valid = await verifyPassword(u?.password_hash || dummyHash, b.password);
       if (!u || !valid) throw new AppError(401, 'Неверный email или пароль');
       const token = randomBytes(32).toString('hex');
       await transaction(async (db) => {
@@ -59,11 +59,11 @@ export async function authRoutes(app: FastifyInstance) {
     const {
       rows: [u],
     } = await pool.query('SELECT password_hash FROM users WHERE id=$1', [req.user.id]);
-    if (!(await argon2.verify(u.password_hash, b.current)))
+    if (!(await verifyPassword(u.password_hash, b.current)))
       throw new AppError(400, 'Текущий пароль неверен');
     await transaction(async (db) => {
       await db.query('UPDATE users SET password_hash=$1 WHERE id=$2', [
-        await argon2.hash(b.password, { type: argon2.argon2id }),
+        await hashPassword(b.password),
         req.user.id,
       ]);
       await db.query('DELETE FROM sessions WHERE user_id=$1', [req.user.id]);
@@ -125,7 +125,7 @@ export async function authRoutes(app: FastifyInstance) {
     const b = z
       .object({ token: z.string().regex(/^[a-f0-9]{64}$/), password: z.string().min(12).max(128) })
       .parse(req.body);
-    const passwordHash = await argon2.hash(b.password, { type: argon2.argon2id });
+    const passwordHash = await hashPassword(b.password);
     await transaction(async (db) => {
       const {
         rows: [i],

@@ -92,7 +92,22 @@ jobs:
           Set-Location ready/LOOMA.CRM
           npm ci --omit=dev --ignore-scripts --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node --input-type=module -e "import argon2 from 'argon2'; import pg from 'pg'; import assert from 'node:assert/strict'; import { existsSync } from 'node:fs'; for (const p of ['esbuild','tsx','vite','typescript']) assert.equal(existsSync('node_modules/'+p), false, p); const h=await argon2.hash('CI-only-password'); assert.ok(await argon2.verify(h,'CI-only-password')); assert.ok(pg.Pool); console.log('Windows runtime dependencies verified without build tools.');"
+          @'
+          import { hashPassword, verifyPassword } from './dist/server/passwords.js';
+          import pg from 'pg';
+          import assert from 'node:assert/strict';
+          import { existsSync } from 'node:fs';
+          for (const p of ['esbuild','tsx','vite','typescript','argon2'])
+            assert.equal(existsSync('node_modules/'+p), false, p);
+          const legacy = '$argon2id$v=19$m=65536,t=3,p=4$TE9PTUEtZml4dHVyZS12MSE$oryASOd9OuBVaRh+J99k7tklP3NjU+U4N1QKFKDtUSA';
+          assert.ok(await verifyPassword(legacy, 'Legacy-Test-Password-2026'));
+          const h = await hashPassword('CI-only-password');
+          assert.ok(await verifyPassword(h, 'CI-only-password'));
+          assert.equal(await verifyPassword(h, 'wrong'), false);
+          assert.ok(pg.Pool);
+          console.log('Windows password workers and legacy hashes verified without native addons or build tools.');
+          '@ | node --input-type=module
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   docker:
     name: Docker Compose launch
     runs-on: ubuntu-latest

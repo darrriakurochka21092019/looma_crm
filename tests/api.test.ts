@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm, readFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import argon2 from 'argon2';
+import { hashPassword } from '../server/passwords.js';
 import * as XLSX from '@e965/xlsx';
 import PizZip from 'pizzip';
 const testUrl = process.env.TEST_DATABASE_URL;
@@ -107,7 +107,7 @@ before(
         step_names: ['Каркас', 'Контроль качества', 'Доставка'],
       },
     ]);
-    const hash = await argon2.hash(password, { type: argon2.argon2id });
+    const hash = await hashPassword(password);
     for (const role of ['owner', 'manager', 'accountant', 'master']) {
       users[role] = (
         await pool.query(
@@ -1597,4 +1597,50 @@ test('Фото изделия: чужой заказ, устаревшая ве�
   });
   assert.equal((await call('GET', '/orders/' + o.id, undefined, 'master')).items[0].photo, null);
   await call('GET', `/documents/${documentPhoto.id}/download?preview=1`, undefined, 'master', 403);
+});
+
+test('Повторный запуск сохраняет владельца и пароль даже без SEED_PASSWORD', async () => {
+  const { seed } = await import('../server/seed.js');
+  const old = process.env.SEED_PASSWORD;
+  const before = (
+    await pool.query("SELECT id,password_hash FROM users WHERE role='owner' ORDER BY id")
+  ).rows;
+  assert.ok(before.length);
+  try {
+    delete process.env.SEED_PASSWORD;
+    await seed(false);
+    assert.deepEqual(
+      (await pool.query("SELECT id,password_hash FROM users WHERE role='owner' ORDER BY id")).rows,
+      before,
+    );
+  } finally {
+    if (old === undefined) delete process.env.SEED_PASSWORD;
+    else process.env.SEED_PASSWORD = old;
+  }
+});
+
+test('Вход после обновления принимает пароль от нативного Argon2id старой версии', async () => {
+  const legacy =
+    '$argon2id$v=19$m=65536,t=3,p=4$TE9PTUEtZml4dHVyZS12MSE$oryASOd9OuBVaRh+J99k7tklP3NjU+U4N1QKFKDtUSA';
+  const original = (
+    await pool.query('SELECT password_hash FROM users WHERE id=$1', [users.manager.id])
+  ).rows[0].password_hash;
+  try {
+    await pool.query('UPDATE users SET password_hash=$1 WHERE id=$2', [legacy, users.manager.id]);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      headers: { 'x-looma-client': 'web', origin: 'http://localhost:3001' },
+      payload: { email: 'manager@test.local', password: 'Legacy-Test-Password-2026' },
+    });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(response.json().id, users.manager.id);
+    assert.equal(
+      (await pool.query('SELECT password_hash FROM users WHERE id=$1', [users.manager.id])).rows[0]
+        .password_hash,
+      legacy,
+    );
+  } finally {
+    await pool.query('UPDATE users SET password_hash=$1 WHERE id=$2', [original, users.manager.id]);
+  }
 });

@@ -488,7 +488,7 @@ function App() {
           <div className="sidebar-bottom">
             <div className="workspace-note">
               <span className="green-dot" /> Локальное пространство
-              <span className="version">v1.2.1</span>
+              <span className="version">v1.2.2</span>
             </div>
             <button className="profile" onClick={() => open('profile')}>
               <span className="avatar">{user.name.slice(0, 1)}</span>

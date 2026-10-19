@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { release } from 'node:os';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const marker = resolve(root, 'node_modules/.looma-runtime-lock');
@@ -12,6 +13,7 @@ if (major < 22 || (major === 22 && minor < 12)) {
   process.exit(1);
 }
 function run(command, args, title) {
+  console.log('LOOMA.CRM: ' + title + '…');
   return new Promise((resolveRun, reject) => {
     const child = spawn(command, args, { cwd: root, stdio: 'inherit', shell: false });
     const stop = (signal) => child.kill(signal);
@@ -30,11 +32,23 @@ function run(command, args, title) {
     child.once('exit', (code, signal) => {
       detach();
       if (code === 0) resolveRun();
-      else reject(new Error(`${title}: код ${code ?? signal}. См. сообщение выше.`));
+      else {
+        const crash = typeof code === 'number' && code >>> 0 === 0xc0000005;
+        reject(
+          new Error(
+            crash
+              ? `${title}: аварийное завершение Node.js (0xC0000005). Скопируйте весь вывод этого окна, начиная со строки «Запуск LOOMA.CRM».`
+              : `${title}: код ${code ?? signal}. См. сообщение выше.`,
+          ),
+        );
+      }
     });
   });
 }
 try {
+  console.log(
+    `Запуск LOOMA.CRM: Node.js ${process.versions.node}, ${process.platform} ${release()}, ${process.arch}`,
+  );
   await readFile(resolve(root, 'dist/server/index.js'));
   await readFile(resolve(root, 'dist-web/index.html'));
   await run(process.execPath, ['scripts/setup.mjs'], 'Создание настроек');
@@ -55,7 +69,7 @@ try {
       [
         '--input-type=module',
         '-e',
-        "import argon2 from 'argon2'; const h=await argon2.hash('LOOMA install check'); if(!await argon2.verify(h,'LOOMA install check')) process.exit(1);",
+        "import {hashPassword,verifyPassword} from './dist/server/passwords.js'; const h=await hashPassword('LOOMA install check'); if(!await verifyPassword(h,'LOOMA install check')) process.exit(1);",
       ],
       'Проверка готового модуля паролей',
     );
