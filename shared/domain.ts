@@ -95,6 +95,8 @@ export type Item = {
   notes: string;
   price?: number;
   planned_cost?: number;
+  photo_document_id?: string | null;
+  photo?: { id: string; name: string; version: number } | null;
 };
 export type Order = {
   id: string;

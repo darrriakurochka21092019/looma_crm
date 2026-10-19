@@ -82,6 +82,7 @@ import {
 } from './forms';
 import { SettingsPage, ImportPage } from './settings';
 import { DocumentGenerationForm } from './document-generation';
+import { ItemPhoto } from './item-photo';
 type Context = {
   user: User;
   users: User[];
@@ -487,7 +488,7 @@ function App() {
           <div className="sidebar-bottom">
             <div className="workspace-note">
               <span className="green-dot" /> Локальное пространство
-              <span className="version">v1.2</span>
+              <span className="version">v1.2.1</span>
             </div>
             <button className="profile" onClick={() => open('profile')}>
               <span className="avatar">{user.name.slice(0, 1)}</span>
@@ -1430,12 +1431,9 @@ function OrderDetail({ id }: { id: string }) {
             )}
           </div>
           <div className="item-cards">
-            {o.items.map((i: Item, index: number) => (
+            {o.items.map((i: Item) => (
               <article className="product-card" key={i.id}>
-                <div className="product-icon">
-                  <Sofa size={40} strokeWidth={1.2} />
-                  <span>{String(index + 1).padStart(2, '0')}</span>
-                </div>
+                <ItemPhoto item={i} order={o} editable={commercial} />
                 <div>
                   <span className="eyebrow">
                     {i.kind} · {i.quantity} шт.

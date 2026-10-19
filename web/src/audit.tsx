@@ -19,6 +19,7 @@ export function auditActionLabel(action: string) {
         payment_plan_added: 'Добавлен план платежа',
         contract_generated: 'Сформирован договор',
         document_generated: 'Сформирован документ из заказа',
+        item_photo_updated: 'Обновлено фото изделия',
         document_details_updated: 'Обновлены реквизиты для документов',
         login: 'Вход в систему',
         password_changed: 'Изменён пароль',

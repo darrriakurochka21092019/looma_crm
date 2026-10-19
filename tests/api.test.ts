@@ -1456,3 +1456,145 @@ test('Автодокументы: ошибка квоты откатывает �
     await pool.query('UPDATE settings SET data=$1 WHERE id=1', [original]);
   }
 });
+
+test('Фото изделия: загрузка прямо в карточке, автоподстановка в предложение и приложение, замена и сохранение при редактировании', async () => {
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jBuoAAAAASUVORK5CYII=',
+    'base64',
+  );
+  let o = await call('GET', '/orders/' + documentOrder.id);
+  const uploadUrl = (version: number, itemId = o.items[0].id) =>
+    `/documents?order_id=${o.id}&item_id=${itemId}&order_version=${version}&category=photo&visibility=technical`;
+  const previous = await call('GET', `/orders/${o.id}/document-data`);
+  const uploaded = await file(uploadUrl(o.version), 'product.png', png, 'manager');
+  const staleVersion = o.version;
+  o = await call('GET', '/orders/' + o.id);
+  assert.equal(o.items[0].photo_document_id, uploaded.id);
+  assert.equal(o.items[0].photo.id, uploaded.id);
+  assert.equal(o.version, staleVersion + 1);
+  const master = await call('GET', '/orders/' + o.id, undefined, 'master');
+  assert.equal(master.items[0].photo.id, uploaded.id);
+  assert.equal(master.items[0].price, undefined);
+  assert.equal(
+    (await call('GET', '/orders/' + o.id, undefined, 'accountant')).items[0].photo,
+    null,
+  );
+  const preview = await call(
+    'GET',
+    `/documents/${uploaded.id}/download?preview=1`,
+    undefined,
+    'master',
+  );
+  assert.deepEqual(preview.rawPayload, png);
+  const initial = await generationRequest(['proposal', 'appendix']);
+  assert.equal(initial.item_images[o.items[0].id], uploaded.id);
+  assert.notEqual(initial.source_token, previous.source_token);
+  const generated = await call('POST', `/orders/${o.id}/generate-documents`, initial);
+  const saved = await call(
+    'GET',
+    `/documents/${generated.documents[0].id}/download?version=${generated.documents[0].version}`,
+  );
+  for (const d of generated.documents) {
+    const r = await call('GET', `/documents/${d.id}/download`),
+      zip = new PizZip(r.rawPayload);
+    const media = Object.keys(zip.files).find((n) => n.includes('/media/looma-'))!;
+    assert.ok(media);
+    assert.deepEqual(zip.file(media)!.asNodeBuffer(), png);
+  }
+  o = await call('GET', '/orders/' + o.id);
+  const replacement = await file(uploadUrl(o.version), 'replacement.png', png, 'owner');
+  assert.notEqual(replacement.id, uploaded.id);
+  o = await call('GET', '/orders/' + o.id);
+  assert.equal(o.items[0].photo_document_id, replacement.id);
+  await call('PATCH', '/orders/' + o.id, {
+    version: o.version,
+    items: o.items.map((i: any) => ({ ...i, model: i.model + ' обновлён' })),
+  });
+  o = await call('GET', '/orders/' + o.id);
+  assert.equal(o.items[0].photo_document_id, replacement.id);
+  const next = await call('GET', `/orders/${o.id}/document-data`);
+  assert.equal(next.item_images[o.items[0].id], replacement.id);
+  await call('PATCH', `/orders/${o.id}/items/${o.items[0].id}/photo`, {
+    version: o.version,
+    photo_document_id: null,
+  });
+  o = await call('GET', '/orders/' + o.id);
+  assert.equal(o.items[0].photo, null);
+  assert.equal(o.items[0].photo_document_id, null);
+  assert.deepEqual((await call('GET', `/orders/${o.id}/document-data`)).item_images, {});
+  assert.deepEqual(
+    (
+      await call(
+        'GET',
+        `/documents/${generated.documents[0].id}/download?version=${generated.documents[0].version}`,
+      )
+    ).rawPayload,
+    saved.rawPayload,
+  );
+  assert.deepEqual((await call('GET', `/documents/${uploaded.id}/download`)).rawPayload, png);
+  documentOrder = o;
+});
+
+test('Фото изделия: чужой заказ, устаревшая версия, роли, неверный формат и квота не меняют карточку и файлы', async () => {
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jBuoAAAAASUVORK5CYII=',
+    'base64',
+  );
+  let o = await call('GET', '/orders/' + documentOrder.id);
+  const url = (version: number, itemId = o.items[0].id) =>
+    `/documents?order_id=${o.id}&item_id=${itemId}&order_version=${version}&category=photo&visibility=technical`;
+  const before = (await readdir(dir)).sort();
+  const counts = (
+    await pool.query(
+      'SELECT count(*)::int count,COALESCE(sum(size),0)::bigint size FROM file_blobs',
+    )
+  ).rows[0];
+  await file(url(o.version), 'x.png', png, 'master', 403);
+  await file(url(o.version), 'x.png', png, 'accountant', 403);
+  await file(url(o.version - 1), 'stale.png', png, 'manager', 409);
+  await file(url(o.version, order.items[0].id), 'other-order.png', png, 'owner', 404);
+  await file(url(o.version), 'bad.pdf', Buffer.from('%PDF-1.4\n%%EOF'), 'owner', 400);
+  await file(url(o.version), 'broken.png', Buffer.from('89504e470d0a1a0a', 'hex'), 'owner', 400);
+  await call(
+    'PATCH',
+    `/orders/${o.id}/items/${o.items[0].id}/photo`,
+    { version: o.version, photo_document_id: doc.id },
+    'owner',
+    400,
+  );
+  await call(
+    'PATCH',
+    `/orders/${o.id}/items/${o.items[0].id}/photo`,
+    { version: o.version, photo_document_id: null },
+    'master',
+    403,
+  );
+  const settings = (await pool.query('SELECT data FROM settings WHERE id=1')).rows[0].data;
+  try {
+    await pool.query(
+      "UPDATE settings SET data=jsonb_set(data,'{storage_quota_mb}',$1::jsonb) WHERE id=1",
+      [JSON.stringify(counts.size / 1024 / 1024)],
+    );
+    await file(url(o.version), 'quota.png', png, 'owner', 400);
+  } finally {
+    await pool.query('UPDATE settings SET data=$1 WHERE id=1', [settings]);
+  }
+  const after = await call('GET', '/orders/' + o.id);
+  assert.equal(after.version, o.version);
+  assert.equal(after.items[0].photo_document_id, null);
+  assert.deepEqual((await readdir(dir)).sort(), before);
+  assert.deepEqual(
+    (
+      await pool.query(
+        'SELECT count(*)::int count,COALESCE(sum(size),0)::bigint size FROM file_blobs',
+      )
+    ).rows[0],
+    counts,
+  );
+  await call('PATCH', `/orders/${o.id}/items/${o.items[0].id}/photo`, {
+    version: o.version,
+    photo_document_id: documentPhoto.id,
+  });
+  assert.equal((await call('GET', '/orders/' + o.id, undefined, 'master')).items[0].photo, null);
+  await call('GET', `/documents/${documentPhoto.id}/download?preview=1`, undefined, 'master', 403);
+});

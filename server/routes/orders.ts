@@ -294,7 +294,15 @@ export async function orderRoutes(app: FastifyInstance) {
       rows: [o],
     } = await pool.query('SELECT * FROM order_totals WHERE id=$1', [id]);
     const items = (
-      await pool.query('SELECT * FROM order_items WHERE order_id=$1 ORDER BY position,id', [id])
+      await pool.query(
+        `SELECT i.*,CASE WHEN v.mime IN ('image/png','image/jpeg') AND
+        ($2::text IN ('owner','manager') OR $2='master' AND d.visibility='technical' OR $2='accountant' AND d.visibility='financial')
+        THEN jsonb_build_object('id',d.id,'name',v.name,'version',v.version) ELSE NULL END photo
+        FROM order_items i LEFT JOIN documents d ON d.id=i.photo_document_id AND d.order_id=i.order_id
+        LEFT JOIN document_versions v ON v.document_id=d.id AND v.version=d.current_version
+        WHERE i.order_id=$1 ORDER BY i.position,i.id`,
+        [id, req.user.role],
+      )
     ).rows;
     const steps = (
       await pool.query(
@@ -430,6 +438,47 @@ export async function orderRoutes(app: FastifyInstance) {
         for (const task of resumed) await enqueueTaskNotification(db, task, 'updated');
       }
       return projectOrder(o, req.user.role);
+    });
+  });
+  app.patch('/orders/:id/items/:itemId/photo', async (req) => {
+    requireRole(req, 'owner', 'manager');
+    const id = uuid.parse((req.params as any).id),
+      itemId = uuid.parse((req.params as any).itemId);
+    const b = z
+      .object({ version: z.number().int().positive(), photo_document_id: uuid.nullable() })
+      .parse(req.body);
+    return transaction(async (db) => {
+      const order = await accessibleOrder(req.user, id, db, true);
+      if (order.version !== b.version) throw new AppError(409, 'Заказ изменён. Обновите карточку');
+      const item = (
+        await db.query('SELECT * FROM order_items WHERE id=$1 AND order_id=$2', [itemId, id])
+      ).rows[0];
+      if (!item) throw new AppError(404, 'Изделие не найдено в этом заказе');
+      if (
+        b.photo_document_id &&
+        !(
+          await db.query(
+            "SELECT 1 FROM documents d JOIN document_versions v ON v.document_id=d.id AND v.version=d.current_version WHERE d.id=$1 AND d.order_id=$2 AND v.mime IN ('image/png','image/jpeg')",
+            [b.photo_document_id, id],
+          )
+        ).rowCount
+      )
+        throw new AppError(400, 'Выберите фото из документов этого заказа');
+      await db.query('UPDATE order_items SET photo_document_id=$2 WHERE id=$1', [
+        itemId,
+        b.photo_document_id,
+      ]);
+      await db.query('UPDATE orders SET version=version+1,updated_at=now() WHERE id=$1', [id]);
+      await audit(
+        db,
+        req.user.id,
+        'order',
+        id,
+        'item_photo_updated',
+        { photo_document_id: item.photo_document_id },
+        { item_id: itemId, photo_document_id: b.photo_document_id },
+      );
+      return { ok: true };
     });
   });
   app.post('/orders/:id/payment-plans', async (req) => {

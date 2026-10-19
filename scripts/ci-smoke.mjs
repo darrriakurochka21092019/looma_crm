@@ -70,7 +70,29 @@ const downloaded = Buffer.from(
 );
 assert.deepEqual(downloaded, bytes);
 assert.equal((await (await request(`/api/orders/${order.id}`)).json()).total, 12000000);
+const detail = await (await request(`/api/orders/${order.id}`)).json();
+const photoForm = new FormData();
+photoForm.append(
+  'file',
+  new Blob(
+    [
+      Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jBuoAAAAASUVORK5CYII=',
+        'base64',
+      ),
+    ],
+    { type: 'image/png' },
+  ),
+  'product.png',
+);
+const photo = await (
+  await request(
+    `/api/documents?order_id=${order.id}&item_id=${detail.items[0].id}&order_version=${detail.version}&category=photo&visibility=technical`,
+    { method: 'POST', form: photoForm },
+  )
+).json();
 const data = await (await request(`/api/orders/${order.id}/document-data`)).json();
+assert.equal(data.item_images[detail.items[0].id], photo.id);
 const generated = await (
   await request(`/api/orders/${order.id}/generate-documents`, {
     method: 'POST',
@@ -86,7 +108,7 @@ const generated = await (
         delivery_address: 'Тестовый адрес CI',
         delivery_terms: 'Доставка включена',
       },
-      item_images: {},
+      item_images: data.item_images,
       item_descriptions: data.item_descriptions,
     },
   })

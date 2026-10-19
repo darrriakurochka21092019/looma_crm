@@ -163,7 +163,7 @@ export async function buildApp(logger = false) {
     async (api) => {
       api.get('/health', async () => {
         await pool.query('SELECT 1');
-        return { status: 'ok', app: 'LOOMA.CRM', version: '1.2.0' };
+        return { status: 'ok', app: 'LOOMA.CRM', version: '1.2.1' };
       });
       await authRoutes(api);
       await orderRoutes(api);

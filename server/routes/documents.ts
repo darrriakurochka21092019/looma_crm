@@ -6,6 +6,7 @@ import { AppError, audit, pool, transaction } from '../db.js';
 import { accessibleOrder, requireRole, uuid } from '../security.js';
 import { fileBytes, removeOrphan, storeFile, validateFile } from '../files.js';
 import { canFinance, documentCategories } from '../../shared/domain.js';
+import { imageSize } from '../office-xml.js';
 const meta = z.object({
   order_id: uuid,
   category: z.enum(Object.keys(documentCategories) as [string, ...string[]]),
@@ -13,6 +14,8 @@ const meta = z.object({
   comment: z.string().max(3000).default(''),
   document_id: uuid.optional(),
   version: z.coerce.number().int().optional(),
+  item_id: uuid.optional(),
+  order_version: z.coerce.number().int().positive().optional(),
 });
 function allowed(role: string, visibility: string) {
   return (
@@ -67,23 +70,59 @@ export async function documentRoutes(app: FastifyInstance) {
   app.post('/documents', async (req) => {
     const b = meta.parse(req.query);
     await accessibleOrder(req.user, b.order_id);
+    if (b.item_id) {
+      requireRole(req, 'owner', 'manager');
+      if (
+        b.category !== 'photo' ||
+        b.visibility !== 'technical' ||
+        b.document_id ||
+        !b.order_version
+      )
+        throw new AppError(
+          400,
+          'Для фото изделия выберите техническое фото и актуальную версию заказа',
+        );
+    }
     if (!allowed(req.user.role, b.visibility))
       throw new AppError(403, 'Нет доступа к этой категории документов');
     const files: { name: string; data: Buffer; mime: string }[] = [];
     let total = 0;
     for await (const part of req.files({
-      limits: { files: b.document_id ? 1 : 10, parts: 10, fileSize: 25 * 1024 * 1024 },
+      limits: { files: b.document_id || b.item_id ? 1 : 10, parts: 10, fileSize: 25 * 1024 * 1024 },
     })) {
       const data = await part.toBuffer();
       total += data.length;
       if (total > 100 * 1024 * 1024) throw new AppError(400, 'Общий размер файлов — до 100 МБ');
       const name = part.filename.replace(/[\x00-\x1f/\\]/g, '_').slice(0, 200);
-      files.push({ name, data, mime: validateFile(name, data) });
+      if (b.item_id && !/\.(png|jpe?g)$/i.test(name))
+        throw new AppError(400, 'Для фото изделия выберите JPG или PNG');
+      const mime = validateFile(name, data, b.item_id ? ['.png', '.jpg', '.jpeg'] : undefined);
+      if (b.item_id)
+        try {
+          imageSize(data, mime);
+        } catch {
+          throw new AppError(400, 'Не удалось прочитать фото. Выберите исправный JPG или PNG');
+        }
+      files.push({ name, data, mime });
     }
     if (!files.length) throw new AppError(400, 'Выберите файлы');
     const storedKeys: string[] = [];
     try {
       return await transaction(async (db) => {
+        if (b.item_id) {
+          const order = await accessibleOrder(req.user, b.order_id, db, true);
+          if (order.version !== b.order_version)
+            throw new AppError(409, 'Заказ изменён. Обновите карточку и загрузите фото ещё раз');
+          if (
+            !(
+              await db.query('SELECT 1 FROM order_items WHERE id=$1 AND order_id=$2', [
+                b.item_id,
+                b.order_id,
+              ])
+            ).rowCount
+          )
+            throw new AppError(404, 'Изделие не найдено в этом заказе');
+        }
         const documents = [];
         for (const { name, data, mime } of files) {
           let id = b.document_id;
@@ -122,6 +161,19 @@ export async function documentRoutes(app: FastifyInstance) {
             visibility: b.visibility,
           });
           documents.push({ id, name, version });
+        }
+        if (b.item_id) {
+          await db.query(
+            'UPDATE order_items SET photo_document_id=$2 WHERE id=$1 AND order_id=$3',
+            [b.item_id, documents[0].id, b.order_id],
+          );
+          await db.query('UPDATE orders SET version=version+1,updated_at=now() WHERE id=$1', [
+            b.order_id,
+          ]);
+          await audit(db, req.user.id, 'order', b.order_id, 'item_photo_updated', null, {
+            item_id: b.item_id,
+            document_id: documents[0].id,
+          });
         }
         return files.length === 1 ? documents[0] : { documents };
       });
