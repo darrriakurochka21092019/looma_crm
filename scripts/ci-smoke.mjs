@@ -37,6 +37,14 @@ const login = await request('/api/auth/login', {
 cookie = login.headers.getSetCookie()[0]?.split(';')[0];
 assert.ok(cookie);
 assert.equal((await (await request('/api/auth/me')).json()).role, 'owner');
+assert.deepEqual(await (await request('/api/auth/help')).json(), {
+  status: 'new',
+  last_step: null,
+  completed: [],
+});
+const helpProgress = { status: 'skipped', last_step: null, completed: ['workspace'] };
+await request('/api/auth/help', { method: 'PATCH', body: helpProgress });
+assert.deepEqual(await (await request('/api/auth/help')).json(), helpProgress);
 
 const client = await (
   await request('/api/clients', {
@@ -121,5 +129,5 @@ for (const file of generated.documents) {
   assert.equal(bytes.subarray(0, 2).toString(), 'PK');
 }
 console.log(
-  'Application verified: static bundle, owner login, client, order, uploads and all four generated templates.',
+  'Application verified: static bundle, owner login, help progress, client, order, uploads and all four generated templates.',
 );

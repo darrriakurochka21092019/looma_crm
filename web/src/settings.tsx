@@ -35,13 +35,18 @@ export function SettingsPage() {
           ['backup', 'Резервное копирование'],
           ['audit', 'Журнал действий'],
         ].map(([s, l]) => (
-          <button key={s} className={tab === s ? 'active' : ''} onClick={() => setTab(s)}>
+          <button
+            data-help-tab={'settings:' + s}
+            key={s}
+            className={tab === s ? 'active' : ''}
+            onClick={() => setTab(s)}
+          >
             {l}
             <ChevronRight size={16} />
           </button>
         ))}
       </div>
-      <section className="card settings-content">
+      <section className="card settings-content" data-help="settings-content">
         {tab === 'company' && <CompanySettings initial={data} />}{' '}
         {tab === 'team' && <TeamSettings />}
         {tab === 'max' && <MaxSettings />}
@@ -130,7 +135,7 @@ function MaxSettings() {
       )}
       <h3>Получатели</h3>
       <p className="muted">Привязку выполняет владелец. У каждого сотрудника — свой ID MAX.</p>
-      <div className="max-recipients">
+      <div className="max-recipients" data-help="max-recipients">
         {data.recipients.map((recipient: any) => (
           <MaxRecipient
             key={recipient.id + ':' + recipient.version}
@@ -512,7 +517,7 @@ function TeamSettings() {
           });
         }}
       >
-        <h3>Пригласить сотрудника</h3>
+        <h3 data-help="team-invite">Пригласить сотрудника</h3>
         <div className="form-grid">
           <label>
             Имя

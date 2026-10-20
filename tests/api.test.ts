@@ -1644,3 +1644,42 @@ test('Вход после обновления принимает пароль �
     await pool.query('UPDATE users SET password_hash=$1 WHERE id=$2', [original, users.manager.id]);
   }
 });
+
+test('Обучение: прогресс личный, сохраняется для каждой роли и не изменяет рабочие данные', async () => {
+  const sql =
+    'SELECT (SELECT count(*)::int FROM orders) orders,(SELECT count(*)::int FROM money_movements) movements,(SELECT count(*)::int FROM tasks) tasks';
+  const before = (await pool.query(sql)).rows;
+  for (const role of ['owner', 'manager', 'accountant', 'master']) {
+    const initial = await call('GET', '/auth/help', undefined, role);
+    assert.deepEqual(initial, { status: 'new', last_step: null, completed: [] });
+    const progress = { status: 'active', last_step: 'workspace.search', completed: ['workspace'] };
+    assert.deepEqual(await call('PATCH', '/auth/help', progress, role), progress);
+    assert.deepEqual(await call('GET', '/auth/help', undefined, role), progress);
+    await call('PATCH', '/auth/help', { ...progress, user_id: users.owner.id }, role, 400);
+    await call('PATCH', '/auth/help', { ...progress, completed: ['unknown'] }, role, 400);
+  }
+  const skipped = { status: 'skipped', last_step: null, completed: ['workspace'] };
+  await call('PATCH', '/auth/help', skipped, 'master');
+  assert.deepEqual(await call('GET', '/auth/help', undefined, 'master'), skipped);
+  assert.equal((await call('GET', '/auth/help', undefined, 'owner')).status, 'active');
+  await pool.query("UPDATE users SET role='accountant' WHERE id=$1", [users.manager.id]);
+  try {
+    assert.deepEqual(await call('GET', '/auth/help', undefined, 'manager'), {
+      status: 'new',
+      last_step: null,
+      completed: [],
+    });
+    await call(
+      'PATCH',
+      '/auth/help',
+      { status: 'completed', last_step: null, completed: ['finance'] },
+      'manager',
+    );
+  } finally {
+    await pool.query("UPDATE users SET role='manager' WHERE id=$1", [users.manager.id]);
+  }
+  assert.equal((await call('GET', '/auth/help', undefined, 'manager')).status, 'active');
+  assert.deepEqual((await pool.query(sql)).rows, before);
+  const noAuth = await app.inject({ url: '/api/auth/help' });
+  assert.equal(noAuth.statusCode, 401);
+});

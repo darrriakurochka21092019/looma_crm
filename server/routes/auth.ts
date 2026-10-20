@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { AppError, audit, hash, pool, transaction } from '../db.js';
 import { requireRole, uuid } from '../security.js';
+import { helpProgressSchema, newHelpProgress } from '../../shared/help.js';
 const cookieOptions = () => ({
   httpOnly: true,
   sameSite: 'strict' as const,
@@ -45,6 +46,21 @@ export async function authRoutes(app: FastifyInstance) {
     },
   );
   app.get('/auth/me', async (req) => req.user);
+  app.get('/auth/help', async (req) => {
+    const {
+      rows: [u],
+    } = await pool.query('SELECT help_progress FROM users WHERE id=$1', [req.user.id]);
+    const parsed = helpProgressSchema.safeParse(u?.help_progress?.[req.user.role]);
+    return parsed.success ? parsed.data : newHelpProgress();
+  });
+  app.patch('/auth/help', async (req) => {
+    const progress = helpProgressSchema.parse(req.body);
+    await pool.query(
+      'UPDATE users SET help_progress=jsonb_set(help_progress,ARRAY[$2::text],$3::jsonb) WHERE id=$1',
+      [req.user.id, req.user.role, JSON.stringify(progress)],
+    );
+    return progress;
+  });
   app.post('/auth/logout', async (req, reply) => {
     await pool.query('DELETE FROM sessions WHERE token_hash=$1', [
       hash(req.cookies.looma_session || ''),

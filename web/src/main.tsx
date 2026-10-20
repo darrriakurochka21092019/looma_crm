@@ -83,6 +83,8 @@ import {
 import { SettingsPage, ImportPage } from './settings';
 import { DocumentGenerationForm } from './document-generation';
 import { ItemPhoto } from './item-photo';
+import { HelpSystem } from './help';
+import './help.css';
 type Context = {
   user: User;
   users: User[];
@@ -91,6 +93,7 @@ type Context = {
   notify: (s: string) => void;
   open: (type: string, data?: any) => void;
   navigate: (s: string) => void;
+  help: () => void;
 };
 export const AppContext = createContext<Context>(null!);
 export const useApp = () => useContext(AppContext);
@@ -146,9 +149,10 @@ export function Modal({
   onClose: () => void;
   wide?: boolean;
 }) {
+  const app = useContext(AppContext);
   useEffect(() => {
     const fn = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape' && !document.querySelector('[data-help-overlay]')) onClose();
     };
     window.addEventListener('keydown', fn);
     const before = document.body.style.overflow;
@@ -168,6 +172,7 @@ export function Modal({
       <section
         className={'modal ' + (wide ? 'wide' : '')}
         role="dialog"
+        data-help="modal"
         aria-modal="true"
         aria-label={title}
       >
@@ -176,6 +181,17 @@ export function Modal({
             <h2>{title}</h2>
             {subtitle && <p>{subtitle}</p>}
           </div>
+          {app?.help && (
+            <button
+              className="icon-btn modal-help-trigger"
+              type="button"
+              onClick={app.help}
+              aria-label="Подсказки к этой форме"
+              title="Подсказки к этой форме"
+            >
+              <CircleHelp size={20} />
+            </button>
+          )}
           <button className="icon-btn" onClick={onClose} aria-label="Закрыть">
             <X size={20} />
           </button>
@@ -359,6 +375,8 @@ function App() {
     [dashboardError, setDashboardError] = useState(''),
     [search, setSearch] = useState('');
   const [period, setPeriod] = useState(day().slice(0, 7));
+  const [helpRequested, setHelpRequested] = useState(0);
+  const showHelp = useCallback(() => setHelpRequested((value) => value + 1), []);
   const routeRoot = route.split('/')[0];
   const page = routeRoot.split('?')[0];
   useEffect(() => {
@@ -449,298 +467,328 @@ function App() {
       !(['finance', 'reports'].includes(id) && !financial),
   );
   const title = nav.find((n) => n[0] === page)?.[1] || 'Обзор';
-  const ctx = { user, users, revision, refresh, notify, open, navigate };
+  const ctx = { user, users, revision, refresh, notify, open, navigate, help: showHelp };
   return (
     <AppContext.Provider value={ctx}>
-      <div className="app-shell">
-        <aside className={'sidebar ' + (mobile ? 'is-open' : '')}>
-          <Logo />
-          <div className="workspace">
-            <span className="workspace-icon">
-              <BriefcaseBusiness size={18} />
-            </span>
-            <div>
-              <b>{companyName}</b>
-              <small>Рабочее пространство</small>
-            </div>
-            <ChevronDown size={14} />
-          </div>
-          <span className="nav-label">УПРАВЛЕНИЕ</span>
-          <nav>
-            {navigation.map(([id, label, Icon]) => (
-              <button
-                key={id}
-                className={'nav-item ' + (page === id ? 'active' : '')}
-                onClick={() => navigate(id)}
-              >
-                <Icon size={19} />
-                <span>{label}</span>
-                {id === 'orders' && (
-                  <span className="nav-count">
-                    {dashboard?.counts
-                      ?.filter((v: any) => !['closed', 'paused', 'cancelled'].includes(v.status))
-                      .reduce((n: number, v: any) => n + v.count, 0) || 0}
-                  </span>
-                )}
-              </button>
-            ))}
-          </nav>
-          <div className="sidebar-bottom">
-            <div className="workspace-note">
-              <span className="green-dot" /> Локальное пространство
-              <span className="version">v1.2.2</span>
-            </div>
-            <button className="profile" onClick={() => open('profile')}>
-              <span className="avatar">{user.name.slice(0, 1)}</span>
-              <span>
-                <b>{user.name}</b>
-                <small>{roleLabels[user.role]}</small>
+      <div data-help-app>
+        <div className="app-shell">
+          <aside className={'sidebar ' + (mobile ? 'is-open' : '')}>
+            <Logo />
+            <div className="workspace">
+              <span className="workspace-icon">
+                <BriefcaseBusiness size={18} />
               </span>
-              <Ellipsis size={18} />
-            </button>
-          </div>
-        </aside>
-        {mobile && <div className="sidebar-scrim" onClick={() => setMobile(false)} />}
-        <div className="main-shell">
-          <header className="topbar">
-            <button
-              className="icon-btn mobile-toggle"
-              onClick={() => setMobile(!mobile)}
-              aria-label="Меню"
-            >
-              <Menu size={22} />
-            </button>
-            <div className="breadcrumbs">
-              Рабочее пространство <span>/</span>
-              <b>{title}</b>
+              <div>
+                <b>{companyName}</b>
+                <small>Рабочее пространство</small>
+              </div>
+              <ChevronDown size={14} />
             </div>
-            <form
-              className="global-search"
-              onSubmit={(e) => {
-                e.preventDefault();
-                navigate('orders?' + encodeURIComponent(search));
-              }}
-            >
-              <Search size={17} />
-              <input
-                aria-label="Поиск по заказам"
-                placeholder="Найти заказ или клиента…"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-              <kbd>↵</kbd>
-            </form>
-            <div className="topbar-actions">
-              <button
-                className="notification-btn icon-btn"
-                aria-label="Уведомления"
-                onClick={() => setNotifications(!notifications)}
-              >
-                <Bell size={19} />
-                {dashboard?.warnings?.length > 0 && <i />}
-              </button>
-              <div className="create-wrap">
-                <button className="btn dark" onClick={() => setCreateMenu(!createMenu)}>
-                  <Plus size={17} />
-                  <span>Создать</span>
+            <span className="nav-label">УПРАВЛЕНИЕ</span>
+            <nav data-help="navigation">
+              {navigation.map(([id, label, Icon]) => (
+                <button
+                  key={id}
+                  className={'nav-item ' + (page === id ? 'active' : '')}
+                  onClick={() => navigate(id)}
+                >
+                  <Icon size={19} />
+                  <span>{label}</span>
+                  {id === 'orders' && (
+                    <span className="nav-count">
+                      {dashboard?.counts
+                        ?.filter((v: any) => !['closed', 'paused', 'cancelled'].includes(v.status))
+                        .reduce((n: number, v: any) => n + v.count, 0) || 0}
+                    </span>
+                  )}
                 </button>
-                {createMenu && (
-                  <div className="dropdown create-dropdown">
-                    {commercial && (
-                      <>
-                        <button onClick={() => open('order')}>
-                          <Sofa size={17} /> Заказ
-                        </button>
-                        <button onClick={() => open('client')}>
-                          <Users size={17} /> Клиента
-                        </button>
-                      </>
-                    )}
-                    {financial && (
-                      <>
-                        <button onClick={() => open('payment')}>
-                          <Wallet size={17} /> Поступление / возврат
-                        </button>
-                        <button onClick={() => open('expense')}>
-                          <ArrowDownLeft size={17} /> Расход
-                        </button>
-                      </>
-                    )}
-                    <button onClick={() => open('task')}>
-                      <CheckCheck size={17} /> Задачу
-                    </button>
+              ))}
+            </nav>
+            <div className="sidebar-bottom">
+              <div className="workspace-note">
+                <span className="green-dot" /> Локальное пространство
+                <span className="version">v1.3.0</span>
+              </div>
+              <button data-help="profile" className="profile" onClick={() => open('profile')}>
+                <span className="avatar">{user.name.slice(0, 1)}</span>
+                <span>
+                  <b>{user.name}</b>
+                  <small>{roleLabels[user.role]}</small>
+                </span>
+                <Ellipsis size={18} />
+              </button>
+            </div>
+          </aside>
+          {mobile && <div className="sidebar-scrim" onClick={() => setMobile(false)} />}
+          <div className="main-shell">
+            <header className="topbar">
+              <button
+                className="icon-btn mobile-toggle"
+                onClick={() => setMobile(!mobile)}
+                aria-label="Меню"
+              >
+                <Menu size={22} />
+              </button>
+              <div className="breadcrumbs">
+                Рабочее пространство <span>/</span>
+                <b>{title}</b>
+              </div>
+              <form
+                className="global-search"
+                data-help="search"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  navigate('orders?' + encodeURIComponent(search));
+                }}
+              >
+                <Search size={17} />
+                <input
+                  aria-label="Поиск по заказам"
+                  placeholder="Найти заказ или клиента…"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                />
+                <kbd>↵</kbd>
+              </form>
+              <div className="topbar-actions">
+                <button
+                  data-help="help"
+                  className="icon-btn help-trigger"
+                  onClick={showHelp}
+                  aria-label="Помощь и обучение"
+                  title="Помощь и обучение"
+                >
+                  <CircleHelp size={21} />
+                </button>
+                <button
+                  className="notification-btn icon-btn"
+                  aria-label="Уведомления"
+                  data-help="notifications"
+                  onClick={() => setNotifications(!notifications)}
+                >
+                  <Bell size={19} />
+                  {dashboard?.warnings?.length > 0 && <i />}
+                </button>
+                <div className="create-wrap" data-help="create">
+                  <button className="btn dark" onClick={() => setCreateMenu(!createMenu)}>
+                    <Plus size={17} />
+                    <span>Создать</span>
+                  </button>
+                  {createMenu && (
+                    <div className="dropdown create-dropdown">
+                      {commercial && (
+                        <>
+                          <button onClick={() => open('order')}>
+                            <Sofa size={17} /> Заказ
+                          </button>
+                          <button onClick={() => open('client')}>
+                            <Users size={17} /> Клиента
+                          </button>
+                        </>
+                      )}
+                      {financial && (
+                        <>
+                          <button onClick={() => open('payment')}>
+                            <Wallet size={17} /> Поступление / возврат
+                          </button>
+                          <button onClick={() => open('expense')}>
+                            <ArrowDownLeft size={17} /> Расход
+                          </button>
+                        </>
+                      )}
+                      <button onClick={() => open('task')}>
+                        <CheckCheck size={17} /> Задачу
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </header>
+            <main className="page" key={user.id}>
+              <div className="page-heading">
+                <div>
+                  <div className="eyebrow">
+                    LOOMA /{' '}
+                    {new Intl.DateTimeFormat('ru-RU', {
+                      day: 'numeric',
+                      month: 'long',
+                      year: 'numeric',
+                      timeZone: 'Europe/Moscow',
+                    }).format(new Date())}
                   </div>
+                  <h1>
+                    {page === 'dashboard' ? (
+                      <>
+                        Всё под контролем <span className="heading-dot">✦</span>
+                      </>
+                    ) : route.includes('/') ? (
+                      'Карточка заказа'
+                    ) : (
+                      title
+                    )}
+                  </h1>
+                  <p>
+                    {page === 'dashboard'
+                      ? 'Хороший день начинается с ясной картины.'
+                      : (
+                          {
+                            orders: 'От первого эскиза до счастливого клиента.',
+                            clients: 'Люди, для которых вы создаёте.',
+                            finance: 'Каждый рубль — на своём месте.',
+                            tasks: 'Понятный план для всей команды.',
+                            documents: 'Все важные файлы рядом.',
+                            reports: 'Результаты бизнеса в понятных цифрах.',
+                            settings: 'Настройте пространство под вашу мастерскую.',
+                          } as any
+                        )[page.split('?')[0]]}
+                  </p>
+                </div>
+                {['dashboard', 'finance', 'reports'].includes(page) && financial && (
+                  <label className="period-picker" data-help="period">
+                    <CalendarDays size={16} />
+                    <input
+                      aria-label="Месяц отчёта"
+                      type="month"
+                      value={period}
+                      onChange={(e) => e.target.value && setPeriod(e.target.value)}
+                    />
+                  </label>
                 )}
               </div>
-            </div>
-          </header>
-          <main className="page" key={user.id}>
-            <div className="page-heading">
               <div>
-                <div className="eyebrow">
-                  LOOMA /{' '}
-                  {new Intl.DateTimeFormat('ru-RU', {
-                    day: 'numeric',
-                    month: 'long',
-                    year: 'numeric',
-                    timeZone: 'Europe/Moscow',
-                  }).format(new Date())}
-                </div>
-                <h1>
-                  {page === 'dashboard' ? (
-                    <>
-                      Всё под контролем <span className="heading-dot">✦</span>
-                    </>
-                  ) : route.includes('/') ? (
-                    'Карточка заказа'
+                {page === 'dashboard' &&
+                  (dashboard ? (
+                    <Dashboard data={dashboard} period={period} />
                   ) : (
-                    title
-                  )}
-                </h1>
-                <p>
-                  {page === 'dashboard'
-                    ? 'Хороший день начинается с ясной картины.'
-                    : (
-                        {
-                          orders: 'От первого эскиза до счастливого клиента.',
-                          clients: 'Люди, для которых вы создаёте.',
-                          finance: 'Каждый рубль — на своём месте.',
-                          tasks: 'Понятный план для всей команды.',
-                          documents: 'Все важные файлы рядом.',
-                          reports: 'Результаты бизнеса в понятных цифрах.',
-                          settings: 'Настройте пространство под вашу мастерскую.',
-                        } as any
-                      )[page.split('?')[0]]}
-                </p>
+                    <LoadState error={dashboardError} />
+                  ))}
+                {(page === 'orders' || page.startsWith('orders?')) &&
+                  (route.includes('/') ? (
+                    <OrderDetail id={route.split('/')[1]} />
+                  ) : (
+                    <Orders
+                      initialQuery={
+                        routeRoot.startsWith('orders?')
+                          ? decodeURIComponent(routeRoot.slice(7))
+                          : ''
+                      }
+                    />
+                  ))}
+                {page === 'clients' && <Clients />}
+                {page === 'finance' && financial && <Finance period={period} />}
+                {page === 'tasks' && <Tasks />}
+                {page === 'documents' && <Documents />}
+                {page === 'reports' && financial && <Reports period={period} />}
+                {page === 'settings' && user.role === 'owner' && <SettingsPage />}
               </div>
-              {['dashboard', 'finance', 'reports'].includes(page) && financial && (
-                <label className="period-picker">
-                  <CalendarDays size={16} />
-                  <input
-                    aria-label="Месяц отчёта"
-                    type="month"
-                    value={period}
-                    onChange={(e) => e.target.value && setPeriod(e.target.value)}
-                  />
-                </label>
-              )}
-            </div>
-            <div>
-              {page === 'dashboard' &&
-                (dashboard ? (
-                  <Dashboard data={dashboard} period={period} />
-                ) : (
-                  <LoadState error={dashboardError} />
-                ))}
-              {(page === 'orders' || page.startsWith('orders?')) &&
-                (route.includes('/') ? (
-                  <OrderDetail id={route.split('/')[1]} />
-                ) : (
-                  <Orders
-                    initialQuery={
-                      routeRoot.startsWith('orders?') ? decodeURIComponent(routeRoot.slice(7)) : ''
-                    }
-                  />
-                ))}
-              {page === 'clients' && <Clients />}
-              {page === 'finance' && financial && <Finance period={period} />}
-              {page === 'tasks' && <Tasks />}
-              {page === 'documents' && <Documents />}
-              {page === 'reports' && financial && <Reports period={period} />}
-              {page === 'settings' && user.role === 'owner' && <SettingsPage />}
-            </div>
-            <footer className="page-footer">
-              <span>LOOMA.CRM</span>
-              <span>Создавайте мебель. Остальное — по порядку.</span>
-            </footer>
-          </main>
+              <footer className="page-footer">
+                <span>LOOMA.CRM</span>
+                <span>Создавайте мебель. Остальное — по порядку.</span>
+              </footer>
+            </main>
+          </div>
         </div>
-      </div>
-      {notifications && (
-        <div className="notifications-panel">
-          <div className="panel-heading">
-            <h3>Требуют внимания</h3>
-            <button className="icon-btn" onClick={() => setNotifications(false)}>
-              <X size={18} />
+        {notifications && (
+          <div className="notifications-panel">
+            <div className="panel-heading">
+              <h3>Требуют внимания</h3>
+              <button className="icon-btn" onClick={() => setNotifications(false)}>
+                <X size={18} />
+              </button>
+            </div>
+            {dashboard?.warnings?.length ? (
+              dashboard.warnings.map((w: any, i: number) => (
+                <button
+                  className="notification-item"
+                  key={i}
+                  onClick={() => navigate(w.type === 'order' ? 'orders/' + w.id : 'tasks')}
+                >
+                  <span className="notice-dot" />
+                  <span>
+                    <b>{w.title}</b>
+                    <small>{w.description}</small>
+                  </span>
+                  <ArrowUpRight size={16} />
+                </button>
+              ))
+            ) : (
+              <Empty title="Всё в порядке" text="Новых напоминаний пока нет." />
+            )}
+          </div>
+        )}
+        {modal && (
+          <Modal
+            title={
+              (
+                {
+                  client: modal.data.id ? 'Редактировать клиента' : 'Новый клиент',
+                  order: modal.data.id ? 'Изменить заказ' : 'Новый заказ',
+                  payment: 'Поступление / возврат',
+                  expense: modal.data.id ? 'Изменить расход' : 'Новый расход',
+                  expensePay: 'Оплатить расход',
+                  task: modal.data.id ? 'Изменить задачу' : 'Новая задача',
+                  document: 'Прикрепить документ',
+                  status: 'Изменить статус',
+                  step: 'Производственный этап',
+                  contract: 'Сформировать договор',
+                  generate_documents: 'Создать документы из заказа',
+                  plan: 'Плановый платёж',
+                  tax: 'Налоговый резерв',
+                  comments: 'Обсуждение задачи',
+                  profile: 'Ваш профиль',
+                  import: 'Импорт из Excel',
+                } as any
+              )[modal.type] || 'LOOMA.CRM'
+            }
+            onClose={close}
+            wide={['order', 'import', 'generate_documents'].includes(modal.type)}
+          >
+            {modal.type === 'client' && <ClientForm data={modal.data} onSaved={saved} />}
+            {modal.type === 'order' && <OrderForm data={modal.data} onSaved={saved} />}
+            {['payment', 'expensePay'].includes(modal.type) && (
+              <PaymentForm
+                data={modal.data}
+                expense={modal.type === 'expensePay'}
+                onSaved={saved}
+              />
+            )}
+            {modal.type === 'expense' && <ExpenseForm data={modal.data} onSaved={saved} />}
+            {modal.type === 'task' && <TaskForm data={modal.data} onSaved={saved} />}
+            {modal.type === 'document' && <DocumentForm data={modal.data} onSaved={saved} />}
+            {modal.type === 'status' && <StatusForm data={modal.data} onSaved={saved} />}
+            {modal.type === 'step' && <StepForm data={modal.data} onSaved={saved} />}
+            {modal.type === 'contract' && <ContractForm data={modal.data} onSaved={saved} />}
+            {modal.type === 'generate_documents' && (
+              <DocumentGenerationForm data={modal.data} onSaved={saved} />
+            )}
+            {modal.type === 'plan' && <PlanForm data={modal.data} onSaved={saved} />}
+            {modal.type === 'tax' && <TaxForm data={modal.data} onSaved={saved} />}
+            {modal.type === 'comments' && <CommentsForm data={modal.data} onSaved={saved} />}
+            {modal.type === 'import' && <ImportPage onSaved={saved} />}
+            {modal.type === 'profile' && <Profile logout={logout} onSaved={saved} />}
+          </Modal>
+        )}
+        {toast && (
+          <div className="toast" role="status">
+            <Check size={18} />
+            {toast}
+            <button onClick={() => setToast('')} aria-label="Скрыть">
+              <X size={15} />
             </button>
           </div>
-          {dashboard?.warnings?.length ? (
-            dashboard.warnings.map((w: any, i: number) => (
-              <button
-                className="notification-item"
-                key={i}
-                onClick={() => navigate(w.type === 'order' ? 'orders/' + w.id : 'tasks')}
-              >
-                <span className="notice-dot" />
-                <span>
-                  <b>{w.title}</b>
-                  <small>{w.description}</small>
-                </span>
-                <ArrowUpRight size={16} />
-              </button>
-            ))
-          ) : (
-            <Empty title="Всё в порядке" text="Новых напоминаний пока нет." />
-          )}
-        </div>
-      )}
-      {modal && (
-        <Modal
-          title={
-            (
-              {
-                client: modal.data.id ? 'Редактировать клиента' : 'Новый клиент',
-                order: modal.data.id ? 'Изменить заказ' : 'Новый заказ',
-                payment: 'Поступление / возврат',
-                expense: modal.data.id ? 'Изменить расход' : 'Новый расход',
-                expensePay: 'Оплатить расход',
-                task: modal.data.id ? 'Изменить задачу' : 'Новая задача',
-                document: 'Прикрепить документ',
-                status: 'Изменить статус',
-                step: 'Производственный этап',
-                contract: 'Сформировать договор',
-                generate_documents: 'Создать документы из заказа',
-                plan: 'Плановый платёж',
-                tax: 'Налоговый резерв',
-                comments: 'Обсуждение задачи',
-                profile: 'Ваш профиль',
-                import: 'Импорт из Excel',
-              } as any
-            )[modal.type] || 'LOOMA.CRM'
-          }
-          onClose={close}
-          wide={['order', 'import', 'generate_documents'].includes(modal.type)}
-        >
-          {modal.type === 'client' && <ClientForm data={modal.data} onSaved={saved} />}
-          {modal.type === 'order' && <OrderForm data={modal.data} onSaved={saved} />}
-          {['payment', 'expensePay'].includes(modal.type) && (
-            <PaymentForm data={modal.data} expense={modal.type === 'expensePay'} onSaved={saved} />
-          )}
-          {modal.type === 'expense' && <ExpenseForm data={modal.data} onSaved={saved} />}
-          {modal.type === 'task' && <TaskForm data={modal.data} onSaved={saved} />}
-          {modal.type === 'document' && <DocumentForm data={modal.data} onSaved={saved} />}
-          {modal.type === 'status' && <StatusForm data={modal.data} onSaved={saved} />}
-          {modal.type === 'step' && <StepForm data={modal.data} onSaved={saved} />}
-          {modal.type === 'contract' && <ContractForm data={modal.data} onSaved={saved} />}
-          {modal.type === 'generate_documents' && (
-            <DocumentGenerationForm data={modal.data} onSaved={saved} />
-          )}
-          {modal.type === 'plan' && <PlanForm data={modal.data} onSaved={saved} />}
-          {modal.type === 'tax' && <TaxForm data={modal.data} onSaved={saved} />}
-          {modal.type === 'comments' && <CommentsForm data={modal.data} onSaved={saved} />}
-          {modal.type === 'import' && <ImportPage onSaved={saved} />}
-          {modal.type === 'profile' && <Profile logout={logout} onSaved={saved} />}
-        </Modal>
-      )}
-      {toast && (
-        <div className="toast" role="status">
-          <Check size={18} />
-          {toast}
-          <button onClick={() => setToast('')} aria-label="Скрыть">
-            <X size={15} />
-          </button>
-        </div>
-      )}
+        )}
+      </div>
+      <HelpSystem
+        key={user.id + user.role}
+        user={user}
+        route={route}
+        requested={helpRequested}
+        modalType={modal?.type}
+        navigate={navigate}
+        open={open}
+        close={close}
+        menu={setMobile}
+      />
     </AppContext.Provider>
   );
 }
@@ -787,7 +835,7 @@ function Dashboard({ data, period }: { data: any; period: string }) {
   return (
     <>
       <div className="dashboard-top">
-        <div className="stat-grid">
+        <div className="stat-grid" data-help="dashboard-stats">
           {financial ? (
             <>
               <Stat
@@ -886,7 +934,7 @@ function Dashboard({ data, period }: { data: any; period: string }) {
             <span>made with care</span>
           </div>
         </div>
-        <section className="card attention-card">
+        <section className="card attention-card" data-help="dashboard-attention">
           <div className="card-heading">
             <h2>
               Требуют внимания <span className="count-bubble">{data.warnings.length}</span>
@@ -930,7 +978,7 @@ function Dashboard({ data, period }: { data: any; period: string }) {
           </div>
           <OrderTable orders={orders} compact />
         </section>
-        <section className="card my-tasks">
+        <section className="card my-tasks" data-help="dashboard-tasks">
           <div className="card-heading">
             <h2>Мои задачи</h2>
             <button
@@ -1129,8 +1177,8 @@ function Orders({ initialQuery }: { initialQuery: string }) {
           </button>
         ))}
       </div>
-      <section className="card">
-        <div className="list-toolbar">
+      <section className="card" data-help="orders">
+        <div className="list-toolbar" data-help="orders-filters">
           <div className="local-search">
             <Search size={17} />
             <input
@@ -1194,7 +1242,7 @@ function Orders({ initialQuery }: { initialQuery: string }) {
             <option value="newest">Сначала новые</option>
           </select>
           {['owner', 'manager'].includes(user.role) && (
-            <button className="btn dark" onClick={() => open('order')}>
+            <button data-help="new-order" className="btn dark" onClick={() => open('order')}>
               <Plus size={16} /> Новый заказ
             </button>
           )}
@@ -1264,7 +1312,11 @@ function OrderDetail({ id }: { id: string }) {
           </div>
           <div className="detail-actions">
             {financial && (
-              <button className="btn dark" onClick={() => open('generate_documents', o)}>
+              <button
+                data-help="generate-documents"
+                className="btn dark"
+                onClick={() => open('generate_documents', o)}
+              >
                 <FileText size={16} />
                 Создать документы
               </button>
@@ -1274,7 +1326,11 @@ function OrderDetail({ id }: { id: string }) {
                 <button className="btn" onClick={() => open('order', o)}>
                   Изменить
                 </button>
-                <button className="btn primary" onClick={() => open('status', o)}>
+                <button
+                  data-help="order-status"
+                  className="btn primary"
+                  onClick={() => open('status', o)}
+                >
                   Статус <ChevronDown size={15} />
                 </button>
               </>
@@ -1286,7 +1342,12 @@ function OrderDetail({ id }: { id: string }) {
         </div>
         <div className="tabs">
           {tabs.map(([s, l]) => (
-            <button key={s} className={tab === s ? 'active' : ''} onClick={() => setTab(s)}>
+            <button
+              data-help-tab={'order:' + s}
+              key={s}
+              className={tab === s ? 'active' : ''}
+              onClick={() => setTab(s)}
+            >
               {l}
             </button>
           ))}
@@ -1311,7 +1372,7 @@ function OrderDetail({ id }: { id: string }) {
                 {o.steps.length}
               </span>
             </div>
-            <div className="production-timeline">
+            <div className="production-timeline" data-help="production">
               {o.steps.map((s: any, i: number) => (
                 <button
                   className={'production-step ' + s.status}
@@ -1388,7 +1449,7 @@ function OrderDetail({ id }: { id: string }) {
             {user.role !== 'master' && (
               <section className="card">
                 <div className="card-heading">
-                  <h2>План платежей</h2>
+                  <h2 data-help="payment-plan">План платежей</h2>
                   <button
                     className="icon-btn soft"
                     onClick={() => open('plan', o)}
@@ -1421,7 +1482,7 @@ function OrderDetail({ id }: { id: string }) {
         </div>
       )}
       {tab === 'items' && (
-        <section className="card">
+        <section className="card" data-help="order-items">
           <div className="card-heading">
             <h2>Спецификация · {o.items.length} изделия</h2>
             {commercial && (
@@ -1514,7 +1575,7 @@ function Clients() {
   const history = useLoad<any>(selected ? '/orders?client_id=' + selected.id : '/orders?limit=1');
   return (
     <>
-      <section className="card">
+      <section className="card" data-help="clients">
         <div className="list-toolbar">
           <div className="local-search">
             <Search size={17} />
@@ -1531,7 +1592,7 @@ function Clients() {
           <span className="results-count">{(data?.[0] as any)?.total_count || 0} клиентов</span>
           <div className="toolbar-spacer" />
           {['owner', 'manager'].includes(user.role) && (
-            <button className="btn dark" onClick={() => open('client')}>
+            <button data-help="new-client" className="btn dark" onClick={() => open('client')}>
               <Plus size={16} /> Добавить клиента
             </button>
           )}
@@ -1678,8 +1739,8 @@ export function Tasks({ orderId }: { orderId?: string }) {
     `/tasks?scope=${scope}&kind=${orderId ? 'all' : kind}${orderId ? '&order_id=' + orderId : ''}`,
   );
   return (
-    <section className="card task-board-card">
-      <div className="list-toolbar">
+    <section className="card task-board-card" data-help="tasks">
+      <div className="list-toolbar" data-help="tasks-filters">
         <div className="segmented">
           {[
             ['mine', 'Мои задачи'],
@@ -1693,7 +1754,12 @@ export function Tasks({ orderId }: { orderId?: string }) {
         </div>
         <div className="toolbar-spacer" />
         {!orderId && (
-          <select aria-label="Тип задач" value={kind} onChange={(e) => setKind(e.target.value)}>
+          <select
+            data-help="task-kind"
+            aria-label="Тип задач"
+            value={kind}
+            onChange={(e) => setKind(e.target.value)}
+          >
             <option value="all">Все задачи</option>
             <option value="order">По заказам</option>
             <option value="standalone">Отдельные задачи</option>
@@ -1702,7 +1768,11 @@ export function Tasks({ orderId }: { orderId?: string }) {
         <button className="btn" onClick={() => setView(view === 'board' ? 'list' : 'board')}>
           {view === 'board' ? 'Списком' : 'Канбан'}
         </button>
-        <button className="btn dark" onClick={() => open('task', { order_id: orderId })}>
+        <button
+          data-help="new-task"
+          className="btn dark"
+          onClick={() => open('task', { order_id: orderId })}
+        >
           <Plus size={16} /> Задача
         </button>
       </div>
@@ -1798,8 +1868,8 @@ export function Documents({ orderId }: { orderId?: string }) {
   const [preview, setPreview] = useState<DocumentRecord | null>(null);
   return (
     <>
-      <section className="card">
-        <div className="list-toolbar">
+      <section className="card" data-help="documents">
+        <div className="list-toolbar" data-help="documents-filters">
           <div className="local-search">
             <Search size={17} />
             <input
@@ -1828,7 +1898,11 @@ export function Documents({ orderId }: { orderId?: string }) {
               Создать документы
             </button>
           )}
-          <button className="btn dark" onClick={() => open('document', { order_id: orderId })}>
+          <button
+            data-help="new-document"
+            className="btn dark"
+            onClick={() => open('document', { order_id: orderId })}
+          >
             <Upload size={16} /> Прикрепить
           </button>
         </div>
@@ -1951,9 +2025,9 @@ export function Finance({ period, order }: { period: string; order?: Order }) {
           />
         </div>
       )}
-      <section className="card">
+      <section className="card" data-help="finance">
         <div className="list-toolbar">
-          <div className="tabs compact-tabs">
+          <div className="tabs compact-tabs" data-help="finance-tabs">
             {[
               ['movements', 'Деньги'],
               ['expenses', 'Расходы'],
@@ -1964,7 +2038,12 @@ export function Finance({ period, order }: { period: string; order?: Order }) {
                   ]
                 : []),
             ].map(([v, l]) => (
-              <button className={tab === v ? 'active' : ''} key={v} onClick={() => setTab(v)}>
+              <button
+                data-help-tab={'finance:' + v}
+                className={tab === v ? 'active' : ''}
+                key={v}
+                onClick={() => setTab(v)}
+              >
                 {l}
               </button>
             ))}
@@ -1975,6 +2054,7 @@ export function Finance({ period, order }: { period: string; order?: Order }) {
           </button>
           <button
             className="btn dark"
+            data-help="new-payment"
             onClick={() => open('payment', order ? { order_id: order.id, order } : {})}
           >
             <Plus size={16} /> Поступление
@@ -2207,7 +2287,7 @@ function Reports({ period }: { period: string }) {
   const s = data.summary;
   return (
     <>
-      <div className="report-actions">
+      <div className="report-actions" data-help="report-export">
         <a className="btn dark" href={'/api/reports/export?period=' + period}>
           <Download size={16} /> Скачать Excel
         </a>
@@ -2215,7 +2295,7 @@ function Reports({ period }: { period: string }) {
           <FileText size={16} /> Сохранить PDF
         </button>
       </div>
-      <div className="report-grid">
+      <div className="report-grid" data-help="report-results">
         <section className="card">
           <div className="card-heading">
             <h2>Прибыльность за {period}</h2>
@@ -2288,7 +2368,7 @@ function Reports({ period }: { period: string }) {
 function History({ orderId }: { orderId: string }) {
   const { data, error } = useLoad<any[]>('/orders/' + orderId + '/history');
   return (
-    <section className="card">
+    <section className="card" data-help="order-history">
       <div className="card-heading">
         <h2>История изменений</h2>
         <ShieldCheck size={20} />

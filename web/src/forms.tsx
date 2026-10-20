@@ -51,7 +51,7 @@ export function FormFooter({
           {error}
         </div>
       )}
-      <div className="form-actions">
+      <div className="form-actions" data-help="form-actions">
         <button className="btn primary" disabled={busy} type="submit">
           {busy ? <Loader2 className="spin" size={16} /> : <Check size={16} />}{' '}
           {busy ? 'Сохраняем…' : label}

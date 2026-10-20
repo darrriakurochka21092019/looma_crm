@@ -72,7 +72,7 @@ export function ItemPhoto({
     }
   }
   return (
-    <div className="product-photo">
+    <div className="product-photo" data-help="item-photo">
       {editable && (
         <input
           ref={input}
